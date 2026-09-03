@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .auth import require_token
 from .config import settings
-from .routers import auth as auth_router, directions, mindmaps, notify, simple, tasks, tools
+from .routers import auth as auth_router, directions, mcp, mcp_oauth, mindmaps, notify, simple, tasks, tools
 from .scheduler import run_forever
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
         await task
 
 
-app = FastAPI(title="CIS Planner API", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="CIS Planner API", version="0.5.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_list, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -34,3 +34,6 @@ def health():
 for r in (directions.router, tasks.router, tools.router, simple.people, simple.delegations, simple.reminders, notify.router, mindmaps.router):
     app.include_router(r, prefix="/api", dependencies=[Depends(require_token)])
 app.include_router(auth_router.router, prefix="/api")  # /auth/login и /auth/callback — без токена
+# MCP-коннектор для Claude: OAuth (/oauth/*, /.well-known/*) и сам эндпоинт /mcp — со своей проверкой Bearer-токена
+app.include_router(mcp_oauth.router)
+app.include_router(mcp.router)

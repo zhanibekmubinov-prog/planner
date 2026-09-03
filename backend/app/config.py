@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     scheduler_interval_sec: int = 60
     app_timezone: str = "Asia/Oral"          # для форматирования времени в сообщениях
     frontend_url: str = ""                    # ссылка «открыть в планнере» в сообщениях
+    public_url: str = ""                      # публичный адрес бэкенда для OAuth-метаданных MCP; пусто = берём из заголовков запроса
 
     # Утренняя сводка: время по app_timezone, каналы через запятую; пусто = выключено
     digest_time: str = "08:30"

@@ -73,7 +73,13 @@ async def _verify_id_token(id_token: str) -> dict:
 @router.get("/callback")
 async def callback(code: str = Query(...), state: str = Query(...), db: Session = Depends(get_db)):
     _cleanup_states()
-    if state not in _states:
+    # Вход ради MCP-коннектора Claude: state = «mcp:<ключ ожидающего запроса>» (см. routers/mcp_oauth.py)
+    pending = None
+    if state.startswith("mcp:"):
+        pending = db.scalar(select(models.McpPendingAuth).where(models.McpPendingAuth.key == state[4:]))
+        if pending is None:
+            raise HTTPException(400, "запрос подключения Claude истёк — начните подключение заново")
+    elif state not in _states:
         raise HTTPException(400, "state не совпал — попробуйте войти ещё раз")
     _states.pop(state, None)
     data = {"client_id": settings.ms_client_id, "client_secret": settings.ms_client_secret, "code": code,
@@ -107,6 +113,10 @@ async def callback(code: str = Query(...), state: str = Query(...), db: Session 
         person = models.Person(name=user.name, email=email); db.add(person)
     person.user_id = user.id
     if user.telegram_chat_id and not person.telegram_chat_id: person.telegram_chat_id = user.telegram_chat_id
+    if pending is not None:
+        pending.user_id = user.id
+        db.commit()
+        return RedirectResponse(f"/oauth/consent?k={pending.key}")
     db.commit()
 
     token = issue_session(user)

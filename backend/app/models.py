@@ -163,3 +163,55 @@ class ActivityLog(Base):
     action: Mapped[str] = mapped_column(String(40))
     payload: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# --- MCP-коннектор: OAuth 2.0 для Claude (claude.ai / мобильное приложение / Claude Desktop) ---
+class McpClient(Base):
+    """Клиент, зарегистрированный через Dynamic Client Registration (Claude регистрируется сам)."""
+    __tablename__ = "mcp_clients"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_name: Mapped[str] = mapped_column(String(128))
+    redirect_uris: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class McpPendingAuth(Base):
+    """Запрос авторизации, ожидающий входа через Microsoft и согласия пользователя (живёт 10 минут)."""
+    __tablename__ = "mcp_pending_auth"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64))
+    redirect_uri: Mapped[str] = mapped_column(String(1000))
+    state: Mapped[str | None] = mapped_column(String(500))
+    code_challenge: Mapped[str] = mapped_column(String(128))
+    scope: Mapped[str | None] = mapped_column(String(200))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class McpAuthCode(Base):
+    __tablename__ = "mcp_auth_codes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    redirect_uri: Mapped[str] = mapped_column(String(1000))
+    code_challenge: Mapped[str] = mapped_column(String(128))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used: Mapped[bool] = mapped_column(default=False)
+
+
+class McpToken(Base):
+    """В базе только SHA-256 хеши токенов. Access живёт 8 ч, refresh — 30 дней с ротацией."""
+    __tablename__ = "mcp_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    refresh_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

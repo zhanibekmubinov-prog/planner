@@ -24,7 +24,7 @@ function wrap(text: string, maxChars: number): string[] {
 }
 function measure(text: string, depth: number) {
   const fs = fontFor(depth); const lines = wrap(text, depth === 0 ? 22 : MAX_CHARS);
-  const w = Math.max(...lines.map((l) => l.length)) * fs * 0.56 + PAD_X * 2;
+  const w = Math.max(...lines.map((l) => l.length)) * fs * 0.62 + PAD_X * 2;
   const h = lines.length * fs * 1.3 + PAD_Y * 2;
   return { w: Math.max(w, depth === 0 ? 120 : 48), h, lines };
 }
@@ -212,6 +212,13 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     setView({ k, x: el.clientWidth / 2 - ((minX + maxX) / 2) * k, y: el.clientHeight / 2 - ((minY + maxY) / 2) * k });
   }
 
+  async function relink(directionId: number | null) {
+    try {
+      const body: MindMapIn = { title: title.trim() || tree.text || "Майндмап", direction_id: directionId, task_id: map.task_id ?? null, data: tree };
+      store.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}`, body));
+    } catch (e) { store.setError(String(e)); }
+  }
+
   async function removeMap() {
     if (!(await confirm(`Майндмап «${title}» будет удалён целиком.`, { danger: true, okLabel: "Удалить майндмап" }))) return;
     try { await del(`/mindmaps/${map.id}`); await store.reloadMindmaps(); onDeleted(); } catch (e) { store.setError(String(e)); }
@@ -230,7 +237,13 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
         <button className="btn ghost" onClick={onBack}>← Назад</button>
         <span className="mm-glyph" aria-hidden="true" />
         <input className="mm-title" value={title} onChange={(e) => { setTitle(e.target.value); setDirty(true); }} placeholder="Название майндмапа" />
-        {direction && <span className="tag"><span className="dot" style={{ background: dirColor(direction), marginRight: 4 }} />{direction.name}</span>}
+        <label className="mm-dir" title="Направление майндмапа">
+          <span className="dot" style={{ background: direction ? dirColor(direction) : "var(--line-strong)" }} />
+          <select className="select" value={map.direction_id ?? ""} onChange={(e) => void relink(e.target.value === "" ? null : Number(e.target.value))}>
+            <option value="">Без направления</option>
+            {store.directions.filter((d) => d.status !== "archived" || d.id === map.direction_id).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </label>
         {task && <button className="tag mm-tasklink" onClick={() => onOpenTask?.(task.id)} title="Открыть задачу">задача: {task.title}</button>}
         <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>
         <span className="spacer" />
@@ -262,15 +275,20 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
             return (
               <div
                 key={l.node.id}
-                className={`mm-node d${Math.min(l.depth, 2)} ${isSel ? "sel" : ""} ${hidden ? "collapsed" : ""}`}
-                style={{ left: l.x - l.w / 2, top: l.y - l.h / 2, width: l.w, minHeight: l.h, ["--c" as string]: l.color, fontSize: fontFor(l.depth) }}
+                className={`mm-node d${Math.min(l.depth, 2)} ${isSel ? "sel" : ""} ${hidden ? "collapsed" : ""} ${isEdit ? "editing" : ""}`}
+                style={(() => {
+                  // В режиме ввода узел шире — растёт в сторону от родителя, чтобы не наезжать на него
+                  const w = isEdit ? Math.max(l.w, 240) : l.w;
+                  const left = !isEdit || l.side === 0 ? l.x - w / 2 : l.side === 1 ? l.x - l.w / 2 : l.x + l.w / 2 - w;
+                  return { left, top: l.y - l.h / 2, width: w, minHeight: l.h, ["--c" as string]: l.color, fontSize: fontFor(l.depth) };
+                })()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); setSelected(l.node.id); }}
                 onDoubleClick={(e) => { e.stopPropagation(); setSelected(l.node.id); setEditing(l.node.id); }}
               >
                 {isEdit ? (
                   <textarea
-                    autoFocus className="mm-input" value={l.node.text} rows={l.lines.length}
+                    autoFocus className="mm-input" value={l.node.text} rows={1}
                     onFocus={(e) => e.target.select()}
                     onChange={(e) => setText(l.node.id, e.target.value.replace(/\n/g, " "))}
                     onBlur={() => finishEdit(l.node.id)}
@@ -281,7 +299,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
                     }}
                   />
                 ) : (
-                  <span className="mm-text">{l.lines.map((ln, i) => <span key={i}>{ln}<br /></span>)}</span>
+                  <span className="mm-text">{l.lines.join("\n")}</span>
                 )}
                 {hidden && <button className="mm-count" title="Развернуть" onClick={(e) => { e.stopPropagation(); toggleCollapse(l.node.id); }}>{countAll(l.node) - 1}</button>}
                 {isSel && !isEdit && (

@@ -112,6 +112,21 @@ class Reminder(Base):
     task: Mapped[Task] = relationship(back_populates="reminders")
 
 
+class MindMap(Base):
+    """Майндмап: дерево узлов в JSON. Может быть привязан к направлению и/или задаче, либо жить сам по себе."""
+    __tablename__ = "mindmaps"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(300))
+    direction_id: Mapped[int | None] = mapped_column(ForeignKey("directions.id", ondelete="SET NULL"))
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    # {"id": "root", "text": "...", "children": [{"id": "...", "text": "...", "children": [...], "collapsed": false}]}
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    direction: Mapped["Direction | None"] = relationship()
+    task: Mapped["Task | None"] = relationship()
+
+
 class ActivityLog(Base):
     __tablename__ = "activity_log"
     id: Mapped[int] = mapped_column(primary_key=True)

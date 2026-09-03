@@ -15,6 +15,8 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork)._
 | **Шаг 4 — планировщик напоминаний (код)** | ✅ написан: `backend/app/scheduler.py` (цикл раз в 60 с внутри бэкенда, lifespan в `main.py`), `notify.py` (Telegram Bot API; Microsoft Graph: sendMail + события календаря, client credentials), `routers/notify.py` (`GET /api/notify/status`, `POST /api/notify/test {channel}`, `POST /api/notify/run-now`). `requirements.txt` + httpx. Проверено TestClient'ом с подменой отправки. **Ждёт коммита и пуша** |
 | Напоминания по поручениям | ✅ код: `Delegation.notified_at` (миграция `b7c1d2e3f4a5`), `scheduler.process_delegations` — при наступлении `check_at` владельцу приходит «Пора проверить у X»; перенос даты сбрасывает флаг. **Ждёт коммита/пуша** (миграция применится при старте контейнера) |
 | Утренняя сводка | ✅ код: `digest.py` (порт `buildReport` с фронта) + `scheduler.send_digest`; ежедневно в `DIGEST_TIME` (по умолч. 08:30 Asia/Oral) по `DIGEST_CHANNELS` (telegram,email); отметка отправки — в `activity_log` (`Digest/sent`). Ручная проверка: `POST /api/notify/digest`. **Ждёт коммита/пуша** |
+| **Майндмапы** | ✅ код: модель `MindMap` (title, direction_id, task_id, data JSON-дерево; миграция `c8d2e3f4a5b6`), роутер `/api/mindmaps` (фильтры `?direction_id=&task_id=`). Фронт: раздел «Майндмапы» (`MindMaps.tsx`), редактор в стиле MindNode (`MindMapEditor.tsx`: авто-раскладка влево/вправо, цвет ветви наследуется, Tab/Enter/F2/Del/Пробел, колёсико-масштаб, автосохранение), кнопка «Майндмап» у направления в шапке доски, глиф на карточке задачи и раздел в окне задачи. Фирменный цвет майндмапов `--mind #0f766e`, форма кнопки — плашка со скосом. **Ждёт коммита/пуша** |
+| Кнопки «+» | ✅ круглые залитые акцентные (`.plus`, `.side-section button`, `.col-head .add`) |
 | Шаг 4 — каналы в проде | ✅ Telegram (свой бот), email и календарь Outlook через Graph — все три проверены `/api/notify/test`, владелец подтвердил «всё работает» (2026-09-03). Секрет Graph был вставлен в чат — стоит перевыпустить. |
 
 ## Что в UI (v0.2)
@@ -37,6 +39,11 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork)._
 3. Дальше: (в) шаг 6 — агенты тулов (Google Sheets / SharePoint через Graph `Sites.Read.All`); (г) PWA-полировка для телефона.
 2. Гигиена: перевыпустить client secret в Entra и обновить `MS_CLIENT_SECRET`.
 4. Шаг 5 — health-score: первая версия уже на Карте направлений (фронт). Дальше — учитывать `activity_log` и поручения (просроченные проверки делегатов), возможно вынести расчёт на бэкенд `/api/directions/report`.
+
+## Майндмапы (для следующей сессии)
+- Данные: `MindMap.data = {id:"root", text, children:[{id, text, children, collapsed?}]}`; корень = название. Раскладка считается на фронте (`layout()` в `MindMapEditor.tsx`), позиции не хранятся.
+- У направления кнопка ведёт: 0 карт → создаёт «<Направление>»; 1 → открывает; >1 → список с фильтром. У задачи — раздел в окне задачи; на карточке — маленький глиф, если карта есть.
+- Идеи дальше: перетаскивание узлов между ветками, заметки/ссылки на узле, экспорт в PNG, превращение узла в задачу.
 
 ## Как устроены напоминания (для следующей сессии)
 - Формула health-score живёт в двух местах: `frontend/src/Overview.tsx` (`buildReport`) и `backend/app/digest.py` (`build_report`). Менять — синхронно.

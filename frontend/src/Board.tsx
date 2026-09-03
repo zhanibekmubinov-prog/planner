@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Direction, dirColor, isOverdue, post, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus } from "./api";
+import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
 type Props = {
   store: Store; direction: Direction | null; selectedId: number | null;
   onSelect: (id: number | null) => void; onEditDirection: (d: Direction) => void;
+  onOpenMindmap: (id: number) => void; onMindmaps: (directionId: number | null) => void;
 };
 
 const toIn = (t: Task): TaskIn => ({
@@ -13,7 +15,7 @@ const toIn = (t: Task): TaskIn => ({
   direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id),
 });
 
-export default function Board({ store, direction, selectedId, onSelect, onEditDirection }: Props) {
+export default function Board({ store, direction, selectedId, onSelect, onEditDirection, onOpenMindmap, onMindmaps }: Props) {
   const [filter, setFilter] = useState<TaskStatus | "all">("all");
   const [hideDone, setHideDone] = useState(false);
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
@@ -61,6 +63,14 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
           {direction ? direction.name : "Все задачи"}
         </h2>
         {direction && <button className="btn ghost sm" onClick={() => onEditDirection(direction)}>Изменить</button>}
+        {direction && (() => {
+          const maps = store.mindmaps.filter((m) => m.direction_id === direction.id && !m.task_id);
+          return <MindButton count={maps.length} onClick={async () => {
+            if (maps.length === 1) onOpenMindmap(maps[0].id);
+            else if (maps.length > 1) onMindmaps(direction.id);
+            else { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); } }
+          }} />;
+        })()}
         <span className="spacer" />
         <span className="saving">{busy ? "сохраняю…" : ""}</span>
         <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>
@@ -118,7 +128,8 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
                   {adding === s && <NewTaskInput onSubmit={(t) => createTask(s, t)} onClose={() => setAdding(null)} />}
                   {items.length === 0 && adding !== s && <div className="col-empty">Перетащите задачу сюда</div>}
                   {items.map((t) => (
-                    <TaskCard key={t.id} task={t} selected={t.id === selectedId} showDirs={!direction} onClick={() => onSelect(t.id)} />
+                    <TaskCard key={t.id} task={t} selected={t.id === selectedId} showDirs={!direction} onClick={() => onSelect(t.id)}
+                      mindmap={store.mindmaps.find((m) => m.task_id === t.id)} onOpenMindmap={onOpenMindmap} />
                   ))}
                 </div>
               </section>
@@ -166,7 +177,7 @@ function NewTaskInput({ onSubmit, onClose }: { onSubmit: (title: string) => Prom
   );
 }
 
-function TaskCard({ task, selected, showDirs, onClick }: { task: Task; selected: boolean; showDirs: boolean; onClick: () => void }) {
+function TaskCard({ task, selected, showDirs, onClick, mindmap, onOpenMindmap }: { task: Task; selected: boolean; showDirs: boolean; onClick: () => void; mindmap?: { id: number }; onOpenMindmap: (id: number) => void }) {
   const [dragging, setDragging] = useState(false);
   const overdue = task.status !== "done" && isOverdue(task.deadline ? `${task.deadline}T23:59:59` : null);
   const checkDue = task.status !== "done" && isOverdue(task.next_check_at);
@@ -193,6 +204,7 @@ function TaskCard({ task, selected, showDirs, onClick }: { task: Task; selected:
         {task.deadline && <span className={`mono ${overdue ? "over" : ""}`}>{overdue ? "⚑ " : ""}до {showDate(task.deadline)}</span>}
         {task.next_check_at && <span className={`mono ${checkDue ? "warn" : ""}`}>⟳ {showDate(task.next_check_at)}</span>}
         {task.tools.length > 0 && <span className="tag">{task.tools.length} тул{task.tools.length === 1 ? "" : "а"}</span>}
+        {mindmap && <span style={{ marginLeft: "auto" }}><MindButton size="sm" count={1} label="" title="Открыть майндмап задачи" onClick={() => onOpenMindmap(mindmap.id)} /></span>}
       </div>
       {showDirs && task.directions.length > 0 && (
         <div className="dirs">

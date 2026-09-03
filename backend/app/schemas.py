@@ -97,4 +97,16 @@ class ReminderOut(ReminderIn, ORM):
     sent_at: datetime | None
 
 
+class MindMapIn(BaseModel):
+    title: str
+    direction_id: int | None = None
+    task_id: int | None = None
+    data: dict
+
+class MindMapOut(MindMapIn, ORM):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+
 TaskOut.model_rebuild()

@@ -3,6 +3,8 @@ import { Direction } from "./api";
 import Board from "./Board";
 import DirectionModal from "./DirectionModal";
 import { PeoplePage, ToolsPage } from "./Registry";
+import MindMapEditor from "./MindMapEditor";
+import MindMapsPage from "./MindMaps";
 import Overview from "./Overview";
 import Sidebar, { View } from "./Sidebar";
 import { useStore } from "./store";
@@ -49,7 +51,7 @@ export default function App() {
   return (
     <div className="shell">
       <Sidebar
-        directions={store.directions} tasks={store.tasks} view={view}
+        directions={store.directions} tasks={store.tasks} view={view} mindmapCount={store.mindmaps.length}
         onView={(v) => { setView(v); if (v.kind !== "board") setSelectedId(null); }}
         onNewDirection={() => setDirModal({ open: true, direction: null })}
       />
@@ -71,6 +73,18 @@ export default function App() {
             onOpenTask={(dirId, taskId) => { setView({ kind: "board", directionId: dirId }); setSelectedId(taskId); }}
             onNewDirection={() => setDirModal({ open: true, direction: null })}
           />
+        ) : view.kind === "mindmaps" ? (
+          <MindMapsPage store={store} filterDirection={view.directionId ?? null} onOpen={(id) => setView({ kind: "mindmap", id })} onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
+        ) : view.kind === "mindmap" ? (
+          (() => {
+            const m = store.mindmaps.find((x) => x.id === view.id);
+            return m ? (
+              <MindMapEditor key={m.id} store={store} map={m}
+                onBack={() => setView(m.direction_id ? { kind: "board", directionId: m.direction_id } : { kind: "mindmaps" })}
+                onDeleted={() => setView({ kind: "mindmaps" })}
+                onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
+            ) : <div className="state"><h3>Майндмап не найден</h3><button className="btn" onClick={() => setView({ kind: "mindmaps" })}>К списку</button></div>;
+          })()
         ) : view.kind === "people" ? (
           <PeoplePage store={store} />
         ) : view.kind === "tools" ? (
@@ -82,12 +96,14 @@ export default function App() {
             <button className="btn primary" onClick={() => setDirModal({ open: true, direction: null })}>+ Первое направление</button>
           </div>
         ) : (
-          <Board store={store} direction={direction} selectedId={selectedId} onSelect={setSelectedId} onEditDirection={(d) => setDirModal({ open: true, direction: d })} />
+          <Board store={store} direction={direction} selectedId={selectedId} onSelect={setSelectedId} onEditDirection={(d) => setDirModal({ open: true, direction: d })}
+            onOpenMindmap={(id) => setView({ kind: "mindmap", id })} onMindmaps={(dirId) => setView({ kind: "mindmaps", directionId: dirId })} />
         )}
       </main>
 
       {showPanel && selected && (
-        <TaskPanel key={selected.id} store={store} task={selected} onClose={() => setSelectedId(null)} onDeleted={() => setSelectedId(null)} />
+        <TaskPanel key={selected.id} store={store} task={selected} onClose={() => setSelectedId(null)} onDeleted={() => setSelectedId(null)}
+          onOpenMindmap={(id) => { setSelectedId(null); setView({ kind: "mindmap", id }); }} />
       )}
 
       {dirModal.open && (

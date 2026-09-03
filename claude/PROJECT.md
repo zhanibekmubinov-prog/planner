@@ -20,6 +20,7 @@
 - `Tool.type` enum: `google_sheet | excel_sharepoint | telegram_bot | notion | other`; `Tool.source_ref` JSON (`spreadsheet_id`, `drive_id`/`item_id`, `bot_username`) — точка входа для агентов.
 - `Reminder` — отдельная таблица, несколько на задачу; `channels` JSON из `telegram | email | outlook_calendar`.
 - `Task.outlook_event_id` — чтобы обновлять событие в Outlook, а не дублировать.
+- `MindMap` — title, `direction_id` (SET NULL), `task_id` (CASCADE), `data` JSON-дерево узлов.
 - `ActivityLog` пишется на create и смену статуса — сырьё для health-score направлений.
 - Люди: `Person` (имя, telegram_chat_id, email); `Delegation` (task, person, check_at, status).
 
@@ -46,6 +47,7 @@
 5. 🔶 Health-score: v1 сделан на фронте (Карта направлений, `buildReport`). Дальше — activity_log, поручения, расчёт на бэкенде.
 6. ИИ-агенты контроля тулов (читают `source_ref`, пишут отчёты). Возможно, MCP-сервер как у Cis-Platform.
 7. Мобильное приложение (Expo) либо остаёмся на PWA.
+8. ✅ Майндмапы (2026-09-03): отдельный раздел + у направлений и задач; редактор в стиле MindNode; таблица `mindmaps`.
 
 ## Правила работы в этом проекте
 - Ответы по-русски. Владелец — не разработчик: команды давать готовыми к копированию, по блокам, с ожидаемым результатом.

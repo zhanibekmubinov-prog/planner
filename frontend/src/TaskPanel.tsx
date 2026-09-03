@@ -4,9 +4,10 @@ import {
   Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
 } from "./api";
 import { useConfirm } from "./confirm";
+import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
-type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void };
+type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void; onOpenMindmap: (id: number) => void };
 
 const toIn = (t: Task): TaskIn => ({
   title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
@@ -14,7 +15,7 @@ const toIn = (t: Task): TaskIn => ({
   direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id),
 });
 
-export default function TaskPanel({ store, task, onClose, onDeleted }: Props) {
+export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindmap }: Props) {
   const [draft, setDraft] = useState<TaskIn>(toIn(task));
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -95,6 +96,28 @@ export default function TaskPanel({ store, task, onClose, onDeleted }: Props) {
             </div>
 
             <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} />
+
+            <div className="section">
+              <div className="section-head">Майндмап<span className="spacer" /></div>
+              {(() => {
+                const maps = store.mindmaps.filter((m) => m.task_id === task.id);
+                return maps.length ? (
+                  <div className="list">{maps.map((m) => (
+                    <div key={m.id} className="item">
+                      <span className="primary">{m.title}</span>
+                      <span className="actions"><MindButton count={1} label="Открыть" onClick={() => onOpenMindmap(m.id)} /></span>
+                    </div>
+                  ))}</div>
+                ) : (
+                  <div className="row">
+                    <MindButton count={0} label="Создать майндмап задачи" onClick={async () => {
+                      try { const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: draft.direction_ids[0] ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); }
+                    }} />
+                    <span className="hint">Разложить задачу на шаги, риски, вопросы.</span>
+                  </div>
+                );
+              })()}
+            </div>
 
             <div className="danger-zone">
               <span className="hint">Создана {showDateTime(task.created_at)}</span>

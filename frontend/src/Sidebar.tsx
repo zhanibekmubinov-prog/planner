@@ -1,13 +1,16 @@
-import { Direction, dirColor, Task } from "./api";
+import { Direction, dirColor, MIND_COLOR, Task } from "./api";
+import { MindGlyph } from "./MindMaps";
 
-export type View = { kind: "overview" } | { kind: "board"; directionId: number | null } | { kind: "people" } | { kind: "tools" };
+export type View =
+  | { kind: "overview" } | { kind: "board"; directionId: number | null } | { kind: "people" } | { kind: "tools" }
+  | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number };
 
 type Props = {
-  directions: Direction[]; tasks: Task[]; view: View;
+  directions: Direction[]; tasks: Task[]; view: View; mindmapCount: number;
   onView: (v: View) => void; onNewDirection: () => void;
 };
 
-export default function Sidebar({ directions, tasks, view, onView, onNewDirection }: Props) {
+export default function Sidebar({ directions, tasks, view, mindmapCount, onView, onNewDirection }: Props) {
   const open = tasks.filter((t) => t.status !== "done");
   const countFor = (id: number) => open.filter((t) => t.directions.some((d) => d.id === id)).length;
   // Доля закрытых задач направления — тонкая шкала под названием
@@ -52,6 +55,10 @@ export default function Sidebar({ directions, tasks, view, onView, onNewDirectio
       </div>
 
       <nav className="side-nav">
+        <button className={`side-item mind-item ${view.kind === "mindmaps" || view.kind === "mindmap" ? "active" : ""}`} onClick={() => onView({ kind: "mindmaps" })} style={{ ["--mind" as string]: MIND_COLOR }}>
+          <span className="name"><span className="mind-ico"><MindGlyph size={13} /></span>Майндмапы</span>
+          <span className="count">{mindmapCount}</span>
+        </button>
         <button className={`side-item ${view.kind === "people" ? "active" : ""}`} onClick={() => onView({ kind: "people" })}>
           <span className="name">Люди</span>
         </button>

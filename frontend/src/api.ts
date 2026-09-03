@@ -64,6 +64,15 @@ export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at"
 export type Reminder = { id: number; task_id: number; fire_at: string; channels: Channel[]; message?: string | null; sent_at?: string | null };
 export type ReminderIn = Omit<Reminder, "id" | "sent_at">;
 
+export type MindNode = { id: string; text: string; children: MindNode[]; collapsed?: boolean };
+export type MindMap = {
+  id: number; title: string; direction_id?: number | null; task_id?: number | null; data: MindNode;
+  created_at: string; updated_at: string;
+};
+export type MindMapIn = { title: string; direction_id?: number | null; task_id?: number | null; data: MindNode };
+export const MIND_COLOR = "#0f766e"; // фирменный цвет майндмапов — отличается от акцента и цветов направлений
+export const newNodeId = () => Math.random().toString(36).slice(2, 10);
+
 // ---- Словари подписей ----
 export const STATUSES: TaskStatus[] = ["backlog", "in_progress", "waiting", "done"];
 export const STATUS_LABEL: Record<TaskStatus, string> = {

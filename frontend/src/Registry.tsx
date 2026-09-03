@@ -1,10 +1,12 @@
 // Справочники: Люди и Тулы. Простые таблицы с редактированием на месте.
 import { useState } from "react";
 import { del, Person, PersonIn, post, put, Tool, ToolIn, TOOL_TYPE_LABEL, ToolType } from "./api";
+import { useConfirm } from "./confirm";
 import { Store } from "./store";
 
 export function PeoplePage({ store }: { store: Store }) {
   const [editing, setEditing] = useState<Person | "new" | null>(null);
+  const confirm = useConfirm();
 
   async function save(form: PersonIn, id?: number) {
     try {
@@ -13,7 +15,7 @@ export function PeoplePage({ store }: { store: Store }) {
     } catch (e) { store.setError(String(e)); }
   }
   async function remove(p: Person) {
-    if (!window.confirm(`Удалить ${p.name}? Если на человека есть поручения, удаление не пройдёт.`)) return;
+    if (!(await confirm(`Удалить ${p.name} из списка? Если на этого человека есть поручения, удаление не пройдёт.`, { danger: true }))) return;
     try { await del(`/people/${p.id}`); await store.reloadPeople(); } catch (e) { store.setError(String(e)); }
   }
 
@@ -67,6 +69,7 @@ function PersonForm({ person, onSave, onCancel }: { person?: Person; onSave: (f:
 
 export function ToolsPage({ store }: { store: Store }) {
   const [editing, setEditing] = useState<Tool | "new" | null>(null);
+  const confirm = useConfirm();
 
   const usage = (id: number) => store.tasks.filter((t) => t.tools.some((x) => x.id === id));
 
@@ -78,7 +81,7 @@ export function ToolsPage({ store }: { store: Store }) {
     } catch (e) { store.setError(String(e)); }
   }
   async function remove(t: Tool) {
-    if (!window.confirm(`Удалить тул «${t.name}»? Он отвяжется от всех задач.`)) return;
+    if (!(await confirm(`Тул «${t.name}» будет удалён и отвязан от всех задач.`, { danger: true, okLabel: "Удалить тул" }))) return;
     try { await del(`/tools/${t.id}`); await store.reloadTools(); await store.reloadTasks(); } catch (e) { store.setError(String(e)); }
   }
 

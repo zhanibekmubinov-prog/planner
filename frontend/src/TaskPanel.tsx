@@ -3,6 +3,7 @@ import {
   api, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, fromDateTimeInput, isOverdue, Person, post, put,
   Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
 } from "./api";
+import { useConfirm } from "./confirm";
 import { Store } from "./store";
 
 type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void };
@@ -18,6 +19,7 @@ export default function TaskPanel({ store, task, onClose, onDeleted }: Props) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const timer = useRef<number | null>(null);
+  const confirm = useConfirm();
 
   // Внешние изменения (перетаскивание, другая задача) — подтягиваем, если нет несохранённых правок
   useEffect(() => { if (!dirty) setDraft(toIn(task)); }, [task, dirty]);
@@ -43,7 +45,7 @@ export default function TaskPanel({ store, task, onClose, onDeleted }: Props) {
   }, [draft, dirty, task.id, task.title, store]);
 
   async function remove() {
-    if (!window.confirm(`Удалить задачу «${task.title}»? Делегирования и напоминания удалятся вместе с ней.`)) return;
+    if (!(await confirm(`Задача «${task.title}» будет удалена вместе с поручениями и напоминаниями.`, { danger: true, okLabel: "Удалить задачу" }))) return;
     try { await del(`/tasks/${task.id}`); await store.reloadTasks(); onDeleted(); } catch (e) { store.setError(String(e)); }
   }
 
@@ -202,6 +204,7 @@ function DelegationsSection({ store, taskId }: { store: Store; taskId: number })
   const [newName, setNewName] = useState("");
   const [checkAt, setCheckAt] = useState("");
   const [comment, setComment] = useState("");
+  const confirm = useConfirm();
 
   const load = async () => { try { setItems(await api<Delegation[]>(`/tasks/${taskId}/delegations`)); } catch (e) { store.setError(String(e)); } };
   useEffect(() => { setItems(null); void load(); }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -227,7 +230,7 @@ function DelegationsSection({ store, taskId }: { store: Store; taskId: number })
     } catch (e) { store.setError(String(e)); }
   }
   async function remove(d: Delegation) {
-    if (!window.confirm(`Снять поручение с ${d.person.name}?`)) return;
+    if (!(await confirm(`Снять поручение с ${d.person.name}?`, { danger: true, okLabel: "Снять" }))) return;
     try { await del(`/delegations/${d.id}`); await load(); } catch (e) { store.setError(String(e)); }
   }
 

@@ -192,6 +192,18 @@ a { color: var(--accent); }
 .section-head { padding-left: 10px; border-left: 3px solid var(--dir, var(--line-strong)); }
 .tm-side .section-head { border-left-color: var(--accent); }
 
+/* ---- Быстрое создание задачи в колонке ---- */
+.new-task { background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 0 0 3px var(--accent-soft); }
+.new-task-input { width: 100%; border: 0; background: transparent; resize: none; font-family: var(--display, inherit); font-size: 15px; font-weight: 600; line-height: 1.3; padding: 0; }
+.new-task-input:focus { outline: 0; }
+
+/* ---- Диалог подтверждения ---- */
+.confirm-backdrop { z-index: 40; }
+.modal.confirm { max-width: 420px; }
+.confirm-text { margin: 0; color: var(--text-2); line-height: 1.5; }
+.btn.danger-solid { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn.danger-solid:hover { background: #8f1f1f; border-color: #8f1f1f; }
+
 /* ---- Кнопки ---- */
 .btn {
   border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); padding: 6px 12px; border-radius: var(--radius);

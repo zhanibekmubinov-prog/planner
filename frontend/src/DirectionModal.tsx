@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { del, Direction, DIRECTION_COLORS, DIRECTION_STATUS_LABEL, DirectionIn, DirectionStatus, post, put } from "./api";
+import { useConfirm } from "./confirm";
 import { Store } from "./store";
 
 type Props = { store: Store; direction: Direction | null; onClose: () => void; onSaved: (d: Direction) => void; onDeleted: () => void };
@@ -10,6 +11,7 @@ export default function DirectionModal({ store, direction, onClose, onSaved, onD
     color: direction?.color ?? DIRECTION_COLORS[store.directions.length % DIRECTION_COLORS.length], status: direction?.status ?? "active",
   });
   const [busy, setBusy] = useState(false);
+  const confirm = useConfirm();
 
   async function save() {
     if (!form.name.trim()) return;
@@ -24,7 +26,7 @@ export default function DirectionModal({ store, direction, onClose, onSaved, onD
   }
   async function remove() {
     if (!direction) return;
-    if (!window.confirm(`Удалить направление «${direction.name}»? Задачи останутся, но потеряют привязку к нему.`)) return;
+    if (!(await confirm(`Направление «${direction.name}» будет удалено. Задачи останутся, но потеряют привязку к нему.`, { danger: true, okLabel: "Удалить направление" }))) return;
     setBusy(true);
     try { await del(`/directions/${direction.id}`); await store.reloadDirections(); await store.reloadTasks(); onDeleted(); }
     catch (e) { store.setError(String(e)); } finally { setBusy(false); }

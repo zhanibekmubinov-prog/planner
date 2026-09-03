@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Direction, dirColor, isOverdue, post, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus } from "./api";
 import { Store } from "./store";
 
@@ -18,6 +18,7 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
   const [hideDone, setHideDone] = useState(false);
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState<TaskStatus | null>(null);
 
   const tasks = useMemo(
     () => store.tasks.filter((t) => !direction || t.directions.some((d) => d.id === direction.id)),
@@ -30,17 +31,17 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
   }, [tasks]);
   const columns = STATUSES.filter((s) => (filter === "all" ? !(hideDone && s === "done") : s === filter));
 
-  async function createTask(status: TaskStatus) {
-    const title = window.prompt("Название задачи");
-    if (!title?.trim()) return;
+  // Создание задачи — поле прямо в колонке; Enter сохраняет и оставляет поле для следующей, Esc закрывает
+  async function createTask(status: TaskStatus, title: string): Promise<boolean> {
+    if (!title.trim()) return false;
     setBusy(true);
     try {
-      const t = await post<Task>("/tasks", {
+      await post<Task>("/tasks", {
         title: title.trim(), status, priority: 3, direction_ids: direction ? [direction.id] : [], tool_ids: [],
       } satisfies TaskIn);
       await store.reloadTasks();
-      onSelect(t.id);
-    } catch (e) { store.setError(String(e)); } finally { setBusy(false); }
+      return true;
+    } catch (e) { store.setError(String(e)); return false; } finally { setBusy(false); }
   }
 
   async function moveTask(id: number, status: TaskStatus) {
@@ -62,7 +63,7 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
         {direction && <button className="btn ghost sm" onClick={() => onEditDirection(direction)}>Изменить</button>}
         <span className="spacer" />
         <span className="saving">{busy ? "сохраняю…" : ""}</span>
-        <button className="btn primary" onClick={() => createTask("backlog")}>+ Задача</button>
+        <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>
         {direction?.goal && <div className="goal">{direction.goal}</div>}
       </div>
 
@@ -87,7 +88,11 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
         <div className="state">
           <h3>{direction ? `В направлении «${direction.name}» пока нет задач` : "Задач пока нет"}</h3>
           <p>Добавьте первую — она появится в колонке «Бэклог».</p>
-          <button className="btn primary" onClick={() => createTask("backlog")}>+ Задача</button>
+          {adding ? (
+            <div style={{ width: 320 }}><NewTaskInput onSubmit={(t) => createTask("backlog", t)} onClose={() => setAdding(null)} /></div>
+          ) : (
+            <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>
+          )}
         </div>
       ) : (
         <div className="board" style={{ ["--cols" as string]: columns.length }}>
@@ -107,10 +112,11 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
               >
                 <header className="col-head">
                   {STATUS_LABEL[s]} <span className="n">{items.length}</span>
-                  <button className="add" title="Добавить задачу сюда" aria-label="Добавить задачу" onClick={() => createTask(s)}>+</button>
+                  <button className="add" title="Добавить задачу сюда" aria-label="Добавить задачу" onClick={() => setAdding(s)}>+</button>
                 </header>
                 <div className="col-body">
-                  {items.length === 0 && <div className="col-empty">Перетащите задачу сюда</div>}
+                  {adding === s && <NewTaskInput onSubmit={(t) => createTask(s, t)} onClose={() => setAdding(null)} />}
+                  {items.length === 0 && adding !== s && <div className="col-empty">Перетащите задачу сюда</div>}
                   {items.map((t) => (
                     <TaskCard key={t.id} task={t} selected={t.id === selectedId} showDirs={!direction} onClick={() => onSelect(t.id)} />
                   ))}
@@ -121,6 +127,42 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
         </div>
       )}
     </>
+  );
+}
+
+function NewTaskInput({ onSubmit, onClose }: { onSubmit: (title: string) => Promise<boolean>; onClose: () => void }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+
+  async function submit(keepOpen: boolean) {
+    if (!value.trim()) { onClose(); return; }
+    setBusy(true);
+    const ok = await onSubmit(value);
+    setBusy(false);
+    if (ok) { setValue(""); if (!keepOpen) onClose(); else ref.current?.focus(); }
+  }
+
+  return (
+    <div className="new-task">
+      <textarea
+        ref={ref} className="new-task-input" rows={2} value={value} placeholder="Название задачи…"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submit(true); }
+          if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        }}
+        disabled={busy}
+      />
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <span className="hint">Enter — добавить, Esc — закрыть</span>
+        <span className="row">
+          <button className="btn ghost sm" onClick={onClose}>Отмена</button>
+          <button className="btn primary sm" onClick={() => submit(false)} disabled={busy || !value.trim()}>Добавить</button>
+        </span>
+      </div>
+    </div>
   );
 }
 

@@ -609,3 +609,138 @@ a { color: var(--accent); }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button:hover { background: var(--surface-2); color: var(--text); }
 .seg button.on { background: var(--accent); color: #fff; }
+
+/* =====================================================================
+   v0.6 — проекты, совместный доступ, вкладки-фильтры
+   ===================================================================== */
+
+/* ---- Фильтры статусов над доской: вкладки с подчёркиванием (Huly/Linear) ---- */
+.filters.tabs { gap: 2px; padding: 6px 20px 0; border-bottom: 1px solid var(--line-strong); align-items: flex-end; }
+.tab {
+  position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px 10px; border: 0; background: transparent; color: var(--text-2);
+  font-family: var(--font); font-size: 13px; font-weight: 500; letter-spacing: 0.01em; border-radius: var(--radius) var(--radius) 0 0; cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.tab::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: transparent; border-radius: 1px; transition: background 0.12s, left 0.12s, right 0.12s; }
+.tab:hover { color: var(--text); background: var(--surface-2); }
+.tab.on { color: var(--text); font-weight: 600; }
+.tab.on::after { background: var(--accent); left: 6px; right: 6px; }
+.tab .n { font-family: var(--mono); font-size: 11px; color: var(--text-3); min-width: 14px; text-align: center; padding: 0 4px; border-radius: 3px; background: var(--surface-2); line-height: 16px; }
+.tab.on .n { background: var(--text); color: var(--surface); }
+.tab.st-in_progress.on::after { background: var(--dir, var(--accent)); }
+.tab.st-waiting.on::after { background: var(--warn); }
+.tab.st-done.on::after { background: var(--ok); }
+.tab.check { font-weight: 400; color: var(--text-3); font-size: 12.5px; cursor: pointer; padding-bottom: 9px; }
+.tab.check::after { display: none; }
+.tab.check input { margin: 0; accent-color: var(--accent); }
+
+/* ---- Шапка доски: крошки Направление › Проект ---- */
+.topbar h2 .crumb { border: 0; background: none; padding: 0 2px; margin: 0 -2px; font: inherit; color: var(--text-2); display: inline-flex; align-items: center; gap: 10px; cursor: pointer; border-radius: 3px; transition: color 0.12s, background 0.12s; }
+.topbar h2 .crumb:hover { color: var(--text); background: var(--surface-2); }
+.topbar h2 .crumb-sep { color: var(--text-3); font-weight: 400; margin: 0 2px; }
+.topbar h2 .crumb-cur { display: inline-flex; align-items: center; gap: 10px; }
+.topbar h2 .crumb-cur.muted { color: var(--text-2); font-style: italic; }
+/* когда открыт проект — направление в крошке мелче, проект крупный */
+.topbar h2 .crumb:has(+ .crumb-sep) { font-size: 0.7em; font-weight: 500; align-self: flex-end; padding-bottom: 3px; }
+.topbar h2 .crumb:has(+ .crumb-sep) .swatch { width: 9px; height: 9px; }
+.tag.ro-tag { background: var(--warn-soft); color: var(--warn); font-weight: 500; }
+.tag.shared-tag { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.tag.proj-tag { display: inline-flex; align-items: center; gap: 4px; }
+.tag.proj-tag .dot { width: 7px; height: 7px; border-radius: 50%; }
+.card.ro { cursor: default; }
+.card.ro:hover { box-shadow: var(--shadow); }
+
+/* ---- Сайдбар: проекты под направлением ---- */
+.side-dir { display: flex; flex-direction: column; }
+.side-item.dir { grid-template-columns: 14px 10px 1fr auto auto; gap: 6px; padding-left: 2px; }
+.side-item.dir .meter { grid-column: 3 / -1; }
+.side-item.dir .name { margin-left: 4px; }
+.chev-btn {
+  width: 14px; height: 20px; border: 0; background: transparent; color: var(--side-muted); font-size: 11px; line-height: 1; padding: 0; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; transition: transform 0.15s, color 0.12s, background 0.12s;
+}
+.chev-btn:hover { color: var(--text); background: rgba(0,0,0,0.08); }
+.chev-btn.open { transform: rotate(90deg); }
+.chev-btn.empty { opacity: 0.35; }
+.side-projects { display: flex; flex-direction: column; gap: 1px; margin: 0 0 4px 21px; padding-left: 6px; border-left: 2px solid var(--dir, var(--line-strong)); }
+.side-item.proj { grid-template-columns: 8px 1fr auto auto; gap: 8px; padding: 5px 8px 5px 8px; font-size: 13.5px; position: relative; }
+.side-item.proj .swatch { width: 8px; height: 8px; border-radius: 2px; }
+.side-item.proj .count { font-size: 10.5px; }
+.side-item.proj:hover .more, .side-item.proj:focus-within .more, .side-item.proj.active .more { opacity: 1; }
+.side-item.proj.paused .name { color: var(--side-muted); }
+.side-item.add-proj { color: var(--side-muted); font-size: 12.5px; }
+.side-item.add-proj:hover { color: var(--text); }
+.side-item.add-proj .plus-swatch { width: 12px; height: 12px; margin-left: -2px; border-radius: 50%; background: var(--dir, var(--accent)); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; line-height: 1; }
+.side-empty.small { font-size: 12px; margin: 2px 8px 4px; }
+.side-item .shared-mark { margin-left: 6px; font-size: 11px; color: var(--accent); opacity: 0.9; vertical-align: 1px; }
+.side-item .swatch.shared { background: transparent; border: 2px solid var(--accent); border-radius: 50%; box-sizing: border-box; }
+[data-theme="journal"] .side-item.proj { font-family: var(--display); font-size: 14.5px; border-radius: var(--radius); }
+[data-theme="journal"] .side-item.proj .swatch { border-radius: 50%; }
+[data-theme="journal"] .side-item.add-proj { font-family: var(--font); font-size: 12.5px; }
+[data-theme="journal"] .side-item.proj.active { box-shadow: none; margin-right: 0; border-right: 0; background: var(--side-active); }
+
+/* ---- Страница направления: карта проектов ---- */
+.dir-page .ov-head { align-items: flex-start; }
+.dir-head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dir-crumb { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); display: flex; align-items: center; gap: 10px; }
+.dir-crumb .tag { text-transform: none; letter-spacing: 0; }
+.dir-head h2 { display: flex; align-items: center; gap: 12px; margin: 0; }
+.dir-head h2 .swatch { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.dir-head .ov-goal { margin: 0; font-size: 15px; }
+.dir-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.ov-card.loose { border-style: dashed; border-top-style: solid; background: transparent; }
+.ov-card.loose.empty { opacity: 0.75; }
+.ov-name .swatch.hollow { background: transparent; border: 2px solid; box-sizing: border-box; border-radius: 50%; }
+.proj-card .ov-name { font-size: 17px; }
+[data-theme="journal"] .dir-head h2 { font-family: var(--display); font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
+[data-theme="journal"] .proj-card .ov-name { font-size: 18px; }
+
+/* ---- Контекстное меню: подпись ---- */
+.ctx-note { margin: 4px 0 0; padding: 6px 10px 4px; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--line); }
+.swatches button.inherit { color: #fff; font-size: 13px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+
+/* ---- Окно «Поделиться» ---- */
+.modal.share-modal { max-width: 640px; }
+.share-head { display: flex; flex-direction: column; gap: 2px; }
+.share-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); }
+.share-add { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+.share-add .seg button { padding: 6px 10px; font-size: 12.5px; }
+.share-err { margin: 0; color: var(--danger); font-size: 13px; }
+.share-suggest { display: flex; gap: 6px; flex-wrap: wrap; }
+.share-suggest .chip .mono { font-size: 11px; color: var(--text-3); }
+.share-row .actions { align-items: center; }
+.share-mail { font-size: 11.5px; color: var(--text-3); margin-left: 6px; font-weight: 400; }
+.seg.sm button { padding: 3px 8px; font-size: 12px; }
+.tag.perm-edit { background: var(--accent-soft); color: var(--accent); }
+.tag.perm-view { background: var(--surface-2); color: var(--text-2); }
+.tag.kind-direction { background: rgba(14,159,110,0.14); color: var(--ok); }
+.tag.kind-project { background: var(--warn-soft); color: var(--warn); }
+.tag.kind-task { background: var(--surface-2); color: var(--text-2); }
+
+/* ---- Раздел «Общие» ---- */
+.shared-page .topbar h2 { display: flex; align-items: center; gap: 10px; }
+.shared-page .topbar h2 .swatch.shared { border: 2px solid var(--accent); border-radius: 50%; box-sizing: border-box; }
+.shared-group { display: flex; flex-direction: column; gap: 8px; }
+.shared-who { margin: 8px 0 0; font-size: 15px; display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.shared-who .hint { font-weight: 400; }
+.avatar-sm { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
+.page .table .trow.shared-row { grid-template-columns: minmax(200px, 1.6fr) auto auto auto auto; }
+[data-theme="journal"] .shared-who { font-family: var(--display); font-size: 17px; }
+
+/* ---- Карточка задачи: только просмотр ---- */
+fieldset.tm-main { border: 0; margin: 0; padding: 16px 20px 22px; min-width: 0; }
+fieldset.tm-main:disabled .title-input, fieldset.tm-main:disabled .textarea, fieldset.tm-main:disabled .chip, fieldset.tm-main:disabled .btn { opacity: 0.85; cursor: default; }
+fieldset.tm-main:disabled .title-input:hover { border-bottom-color: transparent; }
+fieldset.tm-main:disabled .chip.pick:not(.on) { display: none; }
+.task-modal.ro .tm-head { background: var(--warn-soft); }
+.select:disabled, .input:disabled { background: var(--surface-2); color: var(--text-2); cursor: default; }
+@media (max-width: 900px) {
+  .side-dir, .side-projects { flex-direction: row; border: 0; margin: 0; padding: 0; }
+  .chev-btn { display: none; }
+  .side-item.dir { grid-template-columns: 10px auto auto; padding-left: 10px; }
+  .filters.tabs { overflow-x: auto; flex-wrap: nowrap; }
+  .tab { white-space: nowrap; }
+  .page .table .trow.shared-row { grid-template-columns: 1fr auto; }
+  .dir-actions { justify-content: flex-start; }
+}
+.ov-shared { align-self: flex-start; margin-top: -4px; }

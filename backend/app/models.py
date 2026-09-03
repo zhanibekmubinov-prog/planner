@@ -1,6 +1,6 @@
 import enum
 from datetime import date, datetime
-from sqlalchemy import JSON, Column, Date, DateTime, Enum, ForeignKey, Integer, String, Table, Text, func
+from sqlalchemy import JSON, Column, Date, DateTime, Enum, ForeignKey, Integer, String, Table, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
@@ -64,6 +64,42 @@ class Direction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     tasks: Mapped[list["Task"]] = relationship(secondary=task_directions, back_populates="directions")
     tools: Mapped[list["Tool"]] = relationship(secondary=tool_directions, back_populates="directions")
+    projects: Mapped[list["Project"]] = relationship(back_populates="direction", cascade="all, delete-orphan")
+    owner: Mapped["User | None"] = relationship()
+
+
+class Project(Base):
+    """Проект внутри направления (v0.6): Направление → Проекты → Задачи. Задача может жить и без проекта."""
+    __tablename__ = "projects"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    direction_id: Mapped[int] = mapped_column(ForeignKey("directions.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    goal: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(String(16))  # пусто = цвет направления
+    status: Mapped[DirectionStatus] = mapped_column(Enum(DirectionStatus), default=DirectionStatus.active)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    direction: Mapped[Direction] = relationship(back_populates="projects")
+    tasks: Mapped[list["Task"]] = relationship(back_populates="project")
+    owner: Mapped["User | None"] = relationship()
+
+
+class Share(Base):
+    """Совместный доступ (v0.6): направление / проект / задача открыты другому пользователю
+    на просмотр (view) или редактирование (edit). Доступ к направлению распространяется на его проекты
+    и задачи, доступ к проекту — на его задачи."""
+    __tablename__ = "shares"
+    __table_args__ = (UniqueConstraint("entity_type", "entity_id", "user_id", name="uq_share_entity_user"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(16), index=True)   # direction | project | task
+    entity_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    permission: Mapped[str] = mapped_column(String(8), default="view")  # view | edit
+    granted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    user: Mapped["User"] = relationship(foreign_keys=[user_id])
+    granter: Mapped["User | None"] = relationship(foreign_keys=[granted_by])
 
 
 class Task(Base):
@@ -78,6 +114,8 @@ class Task(Base):
     outlook_event_id: Mapped[str | None] = mapped_column(String(300))
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     owner: Mapped["User | None"] = relationship()
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
+    project: Mapped["Project | None"] = relationship(back_populates="tasks")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks")

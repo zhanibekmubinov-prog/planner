@@ -5,7 +5,7 @@ from .. import models, schemas
 from ..auth import current_user
 from ..crud import log
 from ..db import get_db
-from ..scope import get_owned, get_task_visible
+from ..scope import get_direction_editable, get_owned, get_task_visible
 
 router = APIRouter(prefix="/mindmaps", tags=["mindmaps"])
 
@@ -25,7 +25,7 @@ def get(id: int, db: Session = Depends(get_db), user: models.User = Depends(curr
 
 @router.post("", response_model=schemas.MindMapOut, status_code=201)
 def create(data: schemas.MindMapIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    if data.direction_id: get_owned(db, user, models.Direction, data.direction_id)
+    if data.direction_id: get_direction_editable(db, user, data.direction_id)
     if data.task_id: get_task_visible(db, user, data.task_id)
     obj = models.MindMap(**data.model_dump(), owner_id=user.id)
     db.add(obj); db.flush(); log(db, obj, "create"); db.commit()

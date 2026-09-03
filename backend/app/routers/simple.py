@@ -8,7 +8,7 @@ from .. import models, schemas
 from ..auth import current_user
 from ..crud import get_or_404, log
 from ..db import get_db
-from ..scope import get_owned, get_task_visible, my_person_id
+from ..scope import get_task_editable, get_task_visible, my_person_id
 
 # ---------------- Люди: общий справочник ----------------
 people = APIRouter(prefix="/people", tags=["people"])
@@ -80,12 +80,12 @@ def deleg_list(mine: bool = False, db: Session = Depends(get_db), user: models.U
 
 @delegations.post("", response_model=schemas.DelegationOut, status_code=201)
 def deleg_create(data: schemas.DelegationIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    get_owned(db, user, models.Task, data.task_id); get_or_404(db, models.Person, data.person_id)
+    get_task_editable(db, user, data.task_id); get_or_404(db, models.Person, data.person_id)
     obj = models.Delegation(**data.model_dump()); db.add(obj); db.flush(); log(db, obj, "create"); db.commit(); return obj
 
 @delegations.put("/{id}", response_model=schemas.DelegationOut)
 def deleg_update(id: int, data: schemas.DelegationIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    obj = get_or_404(db, models.Delegation, id); get_owned(db, user, models.Task, obj.task_id)
+    obj = get_or_404(db, models.Delegation, id); get_task_editable(db, user, obj.task_id)
     if obj.check_at != data.check_at: obj.notified_at = None  # перенесли проверку — напомнить снова
     for k, v in data.model_dump().items(): setattr(obj, k, v)
     db.commit(); return obj
@@ -102,7 +102,7 @@ def deleg_report(id: int, data: schemas.DelegationReportIn, db: Session = Depend
 
 @delegations.delete("/{id}", status_code=204)
 def deleg_delete(id: int, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    obj = get_or_404(db, models.Delegation, id); get_owned(db, user, models.Task, obj.task_id)
+    obj = get_or_404(db, models.Delegation, id); get_task_editable(db, user, obj.task_id)
     db.delete(obj); db.commit()
 
 
@@ -115,16 +115,16 @@ def rem_list(db: Session = Depends(get_db), user: models.User = Depends(current_
 
 @reminders.post("", response_model=schemas.ReminderOut, status_code=201)
 def rem_create(data: schemas.ReminderIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    get_owned(db, user, models.Task, data.task_id)
+    get_task_editable(db, user, data.task_id)
     obj = models.Reminder(**data.model_dump()); db.add(obj); db.flush(); log(db, obj, "create"); db.commit(); return obj
 
 @reminders.put("/{id}", response_model=schemas.ReminderOut)
 def rem_update(id: int, data: schemas.ReminderIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    obj = get_or_404(db, models.Reminder, id); get_owned(db, user, models.Task, obj.task_id)
+    obj = get_or_404(db, models.Reminder, id); get_task_editable(db, user, obj.task_id)
     for k, v in data.model_dump().items(): setattr(obj, k, v)
     db.commit(); return obj
 
 @reminders.delete("/{id}", status_code=204)
 def rem_delete(id: int, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    obj = get_or_404(db, models.Reminder, id); get_owned(db, user, models.Task, obj.task_id)
+    obj = get_or_404(db, models.Reminder, id); get_task_editable(db, user, obj.task_id)
     db.delete(obj); db.commit()

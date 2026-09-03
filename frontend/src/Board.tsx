@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Direction, dirColor, isOverdue, post, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus } from "./api";
+import { canEdit, Direction, dirColor, isOverdue, post, Project, projColor, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus } from "./api";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
 type Props = {
-  store: Store; direction: Direction | null; selectedId: number | null;
-  onSelect: (id: number | null) => void; onEditDirection: (d: Direction) => void;
+  store: Store; direction: Direction | null; project: Project | null; looseOnly: boolean; selectedId: number | null;
+  onSelect: (id: number | null) => void; onEditDirection: (d: Direction) => void; onOpenDirection: (d: Direction) => void;
+  onEditProject: (p: Project) => void; onShare: () => void;
   onOpenMindmap: (id: number) => void; onMindmaps: (directionId: number | null) => void;
 };
 
 const toIn = (t: Task): TaskIn => ({
   title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
   deadline: t.deadline ?? null, next_check_at: t.next_check_at ?? null,
-  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id),
+  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: t.project_id ?? null,
 });
 
-export default function Board({ store, direction, selectedId, onSelect, onEditDirection, onOpenMindmap, onMindmaps }: Props) {
+export default function Board({ store, direction, project, looseOnly, selectedId, onSelect, onEditDirection, onOpenDirection, onEditProject, onShare, onOpenMindmap, onMindmaps }: Props) {
   const [filter, setFilter] = useState<TaskStatus | "all">("all");
   const [hideDone, setHideDone] = useState(false);
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
@@ -23,9 +24,18 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
   const [adding, setAdding] = useState<TaskStatus | null>(null);
 
   const tasks = useMemo(
-    () => store.tasks.filter((t) => !direction || t.directions.some((d) => d.id === direction.id)),
-    [store.tasks, direction],
+    () => store.tasks.filter((t) => {
+      if (project) return t.project_id === project.id;
+      if (!direction) return true;
+      if (!t.directions.some((d) => d.id === direction.id)) return false;
+      return looseOnly ? !t.project_id : true;
+    }),
+    [store.tasks, direction, project, looseOnly],
   );
+  // Право писать на эту доску: своё или открытое на редактирование
+  const editable = project ? canEdit(project.access) : direction ? canEdit(direction.access) && direction.access !== "via" : true;
+  const readOnlyWho = (project ? (project.access === "view" ? project.owner : null) : direction && (direction.access === "view" || direction.access === "via") ? direction.owner : null)?.name;
+  const accent = project ? projColor(project, store.directions) : direction ? dirColor(direction) : null;
   const counts = useMemo(() => {
     const c: Record<TaskStatus, number> = { backlog: 0, in_progress: 0, waiting: 0, done: 0 };
     tasks.forEach((t) => c[t.status]++);
@@ -39,7 +49,7 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
     setBusy(true);
     try {
       await post<Task>("/tasks", {
-        title: title.trim(), status, priority: 3, direction_ids: direction ? [direction.id] : [], tool_ids: [],
+        title: title.trim(), status, priority: 3, direction_ids: direction ? [direction.id] : [], tool_ids: [], project_id: project?.id ?? null,
       } satisfies TaskIn);
       await store.reloadTasks();
       return true;
@@ -49,46 +59,59 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
   async function moveTask(id: number, status: TaskStatus) {
     const t = store.tasks.find((x) => x.id === id);
     if (!t || t.status === status) return;
+    if (t.access === "view") { store.setError("Только просмотр: эту задачу вам открыли без права редактирования"); return; }
     store.patchTask({ ...t, status });
     try {
-      store.patchTask(await put<Task>(`/tasks/${id}`, { ...toIn(t), status }));
+      // исполнитель без права редактирования меняет только статус — отдельным запросом
+      store.patchTask(t.access === "assignee" ? await post<Task>(`/tasks/${id}/status`, { status }) : await put<Task>(`/tasks/${id}`, { ...toIn(t), status }));
     } catch (e) { store.setError(String(e)); void store.reloadTasks(); }
   }
 
   return (
     <>
-      <div className="topbar">
+      <div className="topbar" style={accent ? { ["--dir" as string]: accent } : undefined}>
         <h2>
-          {direction && <span className="swatch" style={{ background: dirColor(direction) }} />}
-          {direction ? direction.name : "Все задачи"}
+          {direction && (
+            <button className="crumb" onClick={() => onOpenDirection(direction)} title="К карте проектов направления">
+              <span className="swatch" style={{ background: dirColor(direction) }} />{direction.name}
+            </button>
+          )}
+          {direction && (project || looseOnly) && <span className="crumb-sep" aria-hidden="true">›</span>}
+          {project ? <span className="crumb-cur"><span className="swatch" style={{ background: accent ?? undefined }} />{project.name}</span>
+            : looseOnly ? <span className="crumb-cur muted">Без проекта</span>
+            : !direction ? "Все задачи" : null}
+          {!direction && !project && null}
         </h2>
-        {direction && <button className="btn ghost sm" onClick={() => onEditDirection(direction)}>Изменить</button>}
-        {direction && (() => {
+        {readOnlyWho && <span className="tag ro-tag" title="Открыто вам только на просмотр">только просмотр · {readOnlyWho}</span>}
+        {project && editable && <button className="btn ghost sm" onClick={() => onEditProject(project)}>Изменить</button>}
+        {!project && direction && editable && <button className="btn ghost sm" onClick={() => onEditDirection(direction)}>Изменить</button>}
+        {((project && project.access === "owner") || (!project && direction && direction.access === "owner")) && <button className="btn ghost sm" onClick={onShare}>⇄ Поделиться</button>}
+        {direction && !project && !looseOnly && (() => {
           const maps = store.mindmaps.filter((m) => m.direction_id === direction.id && !m.task_id);
           return <MindButton count={maps.length} onClick={async () => {
             if (maps.length === 1) onOpenMindmap(maps[0].id);
             else if (maps.length > 1) onMindmaps(direction.id);
-            else { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); } }
+            else if (editable) { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); } }
           }} />;
         })()}
         <span className="spacer" />
         <span className="saving">{busy ? "сохраняю…" : ""}</span>
-        <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>
-        {direction?.goal && <div className="goal">{direction.goal}</div>}
+        {editable && <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>}
+        {(project?.goal || (!project && direction?.goal)) && <div className="goal">{project ? project.goal : direction?.goal}</div>}
       </div>
 
-      <div className="filters">
-        <button className={`chip ${filter === "all" ? "on" : ""}`} onClick={() => setFilter("all")}>
+      <div className="filters tabs" role="tablist" aria-label="Фильтр по статусу">
+        <button role="tab" aria-selected={filter === "all"} className={`tab ${filter === "all" ? "on" : ""}`} onClick={() => setFilter("all")}>
           Все <span className="n">{tasks.length}</span>
         </button>
         {STATUSES.map((s) => (
-          <button key={s} className={`chip ${filter === s ? "on" : ""}`} onClick={() => setFilter(filter === s ? "all" : s)}>
+          <button key={s} role="tab" aria-selected={filter === s} className={`tab st-${s} ${filter === s ? "on" : ""}`} onClick={() => setFilter(filter === s ? "all" : s)}>
             {STATUS_LABEL[s]} <span className="n">{counts[s]}</span>
           </button>
         ))}
         <span style={{ flex: 1 }} />
         {filter === "all" && (
-          <label className="chip" style={{ cursor: "pointer" }}>
+          <label className="tab check">
             <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> скрыть готовые
           </label>
         )}
@@ -96,9 +119,9 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
 
       {tasks.length === 0 ? (
         <div className="state">
-          <h3>{direction ? `В направлении «${direction.name}» пока нет задач` : "Задач пока нет"}</h3>
-          <p>Добавьте первую — она появится в колонке «Бэклог».</p>
-          {adding ? (
+          <h3>{project ? `В проекте «${project.name}» пока нет задач` : looseOnly ? "Задач без проекта нет" : direction ? `В направлении «${direction.name}» пока нет задач` : "Задач пока нет"}</h3>
+          <p>{editable ? "Добавьте первую — она появится в колонке «Бэклог»." : "Здесь появятся задачи, когда их добавит владелец."}</p>
+          {!editable ? null : adding ? (
             <div style={{ width: 320 }}><NewTaskInput onSubmit={(t) => createTask("backlog", t)} onClose={() => setAdding(null)} /></div>
           ) : (
             <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>
@@ -122,13 +145,13 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
               >
                 <header className="col-head">
                   {STATUS_LABEL[s]} <span className="n">{items.length}</span>
-                  <button className="add" title="Добавить задачу сюда" aria-label="Добавить задачу" onClick={() => setAdding(s)}>+</button>
+                  {editable && <button className="add" title="Добавить задачу сюда" aria-label="Добавить задачу" onClick={() => setAdding(s)}>+</button>}
                 </header>
                 <div className="col-body">
                   {adding === s && <NewTaskInput onSubmit={(t) => createTask(s, t)} onClose={() => setAdding(null)} />}
-                  {items.length === 0 && adding !== s && <div className="col-empty">Перетащите задачу сюда</div>}
+                  {items.length === 0 && adding !== s && <div className="col-empty">{editable ? "Перетащите задачу сюда" : "Пусто"}</div>}
                   {items.map((t) => (
-                    <TaskCard key={t.id} task={t} selected={t.id === selectedId} showDirs={!direction} onClick={() => onSelect(t.id)}
+                    <TaskCard key={t.id} task={t} selected={t.id === selectedId} showDirs={!direction} showProject={!project} project={store.projects.find((p) => p.id === t.project_id)} directions={store.directions} onClick={() => onSelect(t.id)}
                       mindmap={store.mindmaps.find((m) => m.task_id === t.id)} onOpenMindmap={onOpenMindmap} />
                   ))}
                 </div>
@@ -177,16 +200,17 @@ function NewTaskInput({ onSubmit, onClose }: { onSubmit: (title: string) => Prom
   );
 }
 
-function TaskCard({ task, selected, showDirs, onClick, mindmap, onOpenMindmap }: { task: Task; selected: boolean; showDirs: boolean; onClick: () => void; mindmap?: { id: number }; onOpenMindmap: (id: number) => void }) {
+function TaskCard({ task, selected, showDirs, showProject, project, directions, onClick, mindmap, onOpenMindmap }: { task: Task; selected: boolean; showDirs: boolean; showProject: boolean; project?: Project; directions: Direction[]; onClick: () => void; mindmap?: { id: number }; onOpenMindmap: (id: number) => void }) {
   const [dragging, setDragging] = useState(false);
+  const shared = showDirs && (task.access === "edit" || task.access === "view");   // на общей доске направления/проекта пометка избыточна
   const overdue = task.status !== "done" && isOverdue(task.deadline ? `${task.deadline}T23:59:59` : null);
   const checkDue = task.status !== "done" && isOverdue(task.next_check_at);
   return (
     <div
       role="button"
       tabIndex={0}
-      className={`card ${selected ? "selected" : ""} ${task.status === "done" ? "done" : ""} ${dragging ? "dragging" : ""}`}
-      draggable
+      className={`card ${selected ? "selected" : ""} ${task.status === "done" ? "done" : ""} ${dragging ? "dragging" : ""} ${task.access === "view" ? "ro" : ""}`}
+      draggable={task.access !== "view"}
       onDragStart={(e) => { e.dataTransfer.setData("text/task-id", String(task.id)); e.dataTransfer.effectAllowed = "move"; setDragging(true); }}
       onDragEnd={() => setDragging(false)}
       onClick={onClick}
@@ -201,6 +225,8 @@ function TaskCard({ task, selected, showDirs, onClick, mindmap, onOpenMindmap }:
       <div className="meta">
         <span className="code mono">#{task.id}</span>
         <span className={`pri p${task.priority}`}>P{task.priority}</span>
+        {showProject && project && <span className="tag proj-tag" title="Проект"><span className="dot" style={{ background: projColor(project, directions) }} />{project.name}</span>}
+        {shared && <span className="tag shared-tag" title={`Открыл ${task.owner?.name ?? "коллега"} · ${task.access === "edit" ? "редактирование" : "просмотр"}`}>⇄ {task.owner?.name?.split(" ")[0] ?? ""}</span>}
         {task.deadline && <span className={`mono ${overdue ? "over" : ""}`}>{overdue ? "⚑ " : ""}до {showDate(task.deadline)}</span>}
         {task.next_check_at && <span className={`mono ${checkDue ? "warn" : ""}`}>⟳ {showDate(task.next_check_at)}</span>}
         {task.tools.length > 0 && <span className="tag">{task.tools.length} тул{task.tools.length === 1 ? "" : "а"}</span>}

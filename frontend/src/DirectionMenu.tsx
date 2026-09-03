@@ -1,7 +1,7 @@
 // Контекстное меню направления (правая кнопка мыши / кнопка «⋯») и окно переименования.
 // Никаких браузерных prompt/confirm: всё — свои окна.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { del, Direction, DirectionIn, dirColor, MIND_COLOR, put } from "./api";
+import { canEdit, del, Direction, DirectionIn, dirColor, MIND_COLOR, put } from "./api";
 import { useConfirm } from "./confirm";
 import { MindGlyph } from "./MindMaps";
 import { Store } from "./store";
@@ -19,13 +19,16 @@ export function anchorFromEvent(direction: Direction, e: React.MouseEvent): Menu
 
 type Props = {
   store: Store; anchor: MenuAnchor; onClose: () => void;
-  onOpen: (d: Direction) => void; onMindmaps: (d: Direction) => void; onEdit: (d: Direction) => void; onRename: (d: Direction) => void; onDeleted: (d: Direction) => void;
+  onOpen: (d: Direction) => void; onBoard: (d: Direction) => void; onNewProject: (d: Direction) => void; onShare: (d: Direction) => void;
+  onMindmaps: (d: Direction) => void; onEdit: (d: Direction) => void; onRename: (d: Direction) => void; onDeleted: (d: Direction) => void;
 };
 
 const bodyOf = (d: Direction): DirectionIn => ({ name: d.name, description: d.description ?? null, goal: d.goal ?? null, color: d.color ?? null, status: d.status });
 
-export default function DirectionMenu({ store, anchor, onClose, onOpen, onMindmaps, onEdit, onRename, onDeleted }: Props) {
+export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard, onNewProject, onShare, onMindmaps, onEdit, onRename, onDeleted }: Props) {
   const d = anchor.direction;
+  const editable = canEdit(d.access) && d.access !== "via";
+  const owner = !d.access || d.access === "owner";
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchor.x, y: anchor.y });
   const confirm = useConfirm();
@@ -50,8 +53,8 @@ export default function DirectionMenu({ store, anchor, onClose, onOpen, onMindma
   }
   async function remove() {
     onClose();
-    if (!(await confirm(`Направление «${d.name}» будет удалено. Задачи останутся, но потеряют привязку к нему.`, { danger: true, okLabel: "Удалить направление" }))) return;
-    try { await del(`/directions/${d.id}`); await store.reloadDirections(); await store.reloadTasks(); onDeleted(d); }
+    if (!(await confirm(`Направление «${d.name}» будет удалено вместе с его проектами. Задачи останутся, но потеряют привязку к нему.`, { danger: true, okLabel: "Удалить направление" }))) return;
+    try { await del(`/directions/${d.id}`); await Promise.all([store.reloadDirections(), store.reloadProjects(), store.reloadTasks()]); onDeleted(d); }
     catch (e) { store.setError(String(e)); }
   }
   const run = (fn: (d: Direction) => void) => () => { onClose(); fn(d); };
@@ -61,18 +64,28 @@ export default function DirectionMenu({ store, anchor, onClose, onOpen, onMindma
     <div className="ctx-backdrop" onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
       <div ref={ref} className="ctx-menu" role="menu" aria-label={`Направление ${d.name}`} style={{ left: pos.x, top: pos.y }} onMouseDown={(e) => e.stopPropagation()}>
         <div className="ctx-title"><span className="swatch" style={{ background: dirColor(d) }} /><span className="ctx-name">{d.name}</span><span className="mono ctx-count">{open}</span></div>
-        <button role="menuitem" onClick={run(onOpen)}>Открыть доску</button>
-        <button role="menuitem" onClick={run(onMindmaps)} style={{ ["--mind" as string]: MIND_COLOR }}><span className="ctx-ico" style={{ color: MIND_COLOR }}><MindGlyph size={12} /></span>Майндмапы направления</button>
-        <hr />
-        <button role="menuitem" onClick={run(onRename)}>Переименовать…</button>
-        <button role="menuitem" onClick={run(onEdit)}>Изменить: цель, цвет, описание…</button>
-        <hr />
-        {d.status === "active"
-          ? <button role="menuitem" onClick={() => setStatus("paused")}>Поставить на паузу</button>
-          : <button role="menuitem" onClick={() => setStatus("active")}>{d.status === "paused" ? "Возобновить" : "Вернуть из архива"}</button>}
-        {d.status !== "archived" && <button role="menuitem" onClick={() => setStatus("archived")}>В архив</button>}
-        <hr />
-        <button role="menuitem" className="danger" onClick={remove}>Удалить направление…</button>
+        <button role="menuitem" onClick={run(onOpen)}>Карта проектов</button>
+        <button role="menuitem" onClick={run(onBoard)}>Все задачи направления</button>
+        {editable && <button role="menuitem" onClick={run(onNewProject)}><span className="ctx-ico">+</span>Новый проект…</button>}
+        {d.access !== "via" && <button role="menuitem" onClick={run(onMindmaps)} style={{ ["--mind" as string]: MIND_COLOR }}><span className="ctx-ico" style={{ color: MIND_COLOR }}><MindGlyph size={12} /></span>Майндмапы направления</button>}
+        {editable && <>
+          <hr />
+          <button role="menuitem" onClick={run(onRename)}>Переименовать…</button>
+          <button role="menuitem" onClick={run(onEdit)}>Изменить: цель, цвет, описание…</button>
+        </>}
+        {owner && <button role="menuitem" onClick={run(onShare)}><span className="ctx-ico">⇄</span>Поделиться…</button>}
+        {editable && <>
+          <hr />
+          {d.status === "active"
+            ? <button role="menuitem" onClick={() => setStatus("paused")}>Поставить на паузу</button>
+            : <button role="menuitem" onClick={() => setStatus("active")}>{d.status === "paused" ? "Возобновить" : "Вернуть из архива"}</button>}
+          {d.status !== "archived" && <button role="menuitem" onClick={() => setStatus("archived")}>В архив</button>}
+        </>}
+        {owner && <>
+          <hr />
+          <button role="menuitem" className="danger" onClick={remove}>Удалить направление…</button>
+        </>}
+        {!editable && <p className="ctx-note">{d.access === "via" ? "Вам открыта только часть этого направления" : "Только просмотр"} — {d.owner?.name ?? "коллега"}</p>}
       </div>
     </div>
   );

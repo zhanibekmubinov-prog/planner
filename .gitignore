@@ -6,3 +6,4 @@ node_modules/
 dist/
 .vscode/
 _mcp_test.db
+_*.db

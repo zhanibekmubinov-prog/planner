@@ -1,21 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  api, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, fromDateTimeInput, isOverdue, Person, post, put,
+  api, canEdit, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, fromDateTimeInput, isOverdue, Person, post, projColor, put,
   Recipient, RECIPIENT_LABEL, Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
 } from "./api";
 import { useConfirm } from "./confirm";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
-type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void; onOpenMindmap: (id: number) => void };
+type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void; onOpenMindmap: (id: number) => void; onShare: () => void };
 
 const toIn = (t: Task): TaskIn => ({
   title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
   deadline: t.deadline || null, next_check_at: t.next_check_at || null,
-  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id),
+  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: t.project_id ?? null,
 });
 
-export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindmap }: Props) {
+export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindmap, onShare }: Props) {
   const [draft, setDraft] = useState<TaskIn>(toIn(task));
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -37,7 +37,9 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
     timer.current = window.setTimeout(async () => {
       setSaving(true);
       try {
-        const saved = await put<Task>(`/tasks/${task.id}`, { ...draft, title: draft.title.trim() || task.title });
+        const saved = task.access === "assignee"
+          ? await post<Task>(`/tasks/${task.id}/status`, { status: draft.status })
+          : await put<Task>(`/tasks/${task.id}`, { ...draft, title: draft.title.trim() || task.title });
         store.patchTask(saved);
         setDirty(false);
       } catch (e) { store.setError(String(e)); } finally { setSaving(false); }
@@ -53,23 +55,38 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
   const toggle = (arr: number[], id: number) => (arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
 
   const dirs = store.directions.filter((d) => draft.direction_ids.includes(d.id));
-  const accent = dirs.length ? dirColor(dirs[0]) : "var(--line-strong)";
+  const project = store.projects.find((p) => p.id === draft.project_id) ?? null;
+  const accent = project ? projColor(project, store.directions) : dirs.length ? dirColor(dirs[0]) : "var(--line-strong)";
+  const editable = canEdit(task.access);           // владелец или редактор
+  const isOwner = !task.access || task.access === "owner";
+  const readOnly = task.access === "view" || task.access === "assignee";
+  // Проекты, доступные для выбора: из выбранных направлений (или всех редактируемых, если направления не выбраны)
+  const projectOptions = store.projects.filter((p) => p.status !== "archived" && canEdit(p.access) && (draft.direction_ids.length === 0 || draft.direction_ids.includes(p.direction_id)) || p.id === draft.project_id);
+  function setProject(id: number | null) {
+    const p = store.projects.find((x) => x.id === id);
+    change({ project_id: id, direction_ids: p && !draft.direction_ids.includes(p.direction_id) ? [...draft.direction_ids, p.direction_id] : draft.direction_ids });
+  }
 
   return (
     <div className="backdrop task-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="task-modal" role="dialog" aria-modal="true" aria-label="Карточка задачи" style={{ ["--dir" as string]: accent }}>
+      <div className={`task-modal ${readOnly ? "ro" : ""}`} role="dialog" aria-modal="true" aria-label="Карточка задачи" style={{ ["--dir" as string]: accent }}>
         <div className="tm-head">
           <span className="tm-rail">{(dirs.length ? dirs : [null]).map((d, i) => <span key={i} style={{ background: d ? dirColor(d) : "var(--line-strong)" }} />)}</span>
           <span className="id">#{task.id}</span>
           <span className={`status-pill st-${draft.status}`}>{STATUS_LABEL[draft.status]}</span>
           <span className={`pri p${draft.priority}`}>P{draft.priority}</span>
-          <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>
+          {readOnly
+            ? <span className="tag ro-tag">{task.access === "view" ? "только просмотр" : "поручено вам"} · {task.owner?.name ?? "коллега"}</span>
+            : !isOwner ? <span className="tag shared-tag">⇄ открыл {task.owner?.name ?? "коллега"}</span>
+            : <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>}
+          {!isOwner && !readOnly && <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>}
           <span className="spacer" />
+          {isOwner && <button className="btn ghost sm" onClick={onShare} title="Открыть задачу коллеге">⇄ Поделиться</button>}
           <button className="btn ghost icon" onClick={onClose} title="Закрыть (Esc)" aria-label="Закрыть">×</button>
         </div>
 
         <div className="tm-body">
-          <div className="tm-main">
+          <fieldset className="tm-main" disabled={readOnly}>
             <div className="grow-wrap" data-value={draft.title || "Название задачи"}>
               <textarea
                 className="title-input" rows={1} value={draft.title} placeholder="Название задачи"
@@ -81,8 +98,10 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
             <div className="section">
               <div className="section-head">Направления <span className="n">{draft.direction_ids.length}</span></div>
               <div className="chips">
-                {store.directions.filter((d) => d.status !== "archived" || draft.direction_ids.includes(d.id)).map((d) => (
-                  <button key={d.id} className={`chip pick ${draft.direction_ids.includes(d.id) ? "on" : ""}`} style={{ ["--pick" as string]: dirColor(d) }} onClick={() => change({ direction_ids: toggle(draft.direction_ids, d.id) })}>
+                {store.directions.filter((d) => (d.status !== "archived" && canEdit(d.access) && d.access !== "via") || draft.direction_ids.includes(d.id)).map((d) => (
+                  <button key={d.id} className={`chip pick ${draft.direction_ids.includes(d.id) ? "on" : ""}`} style={{ ["--pick" as string]: dirColor(d) }}
+                    disabled={project?.direction_id === d.id} title={project?.direction_id === d.id ? "Направление проекта — снимается вместе с проектом" : undefined}
+                    onClick={() => change({ direction_ids: toggle(draft.direction_ids, d.id) })}>
                     <span className="dot" style={{ background: dirColor(d) }} />{d.name}
                   </button>
                 ))}
@@ -95,7 +114,7 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
               <textarea className="textarea" rows={5} value={draft.description ?? ""} onChange={(e) => change({ description: e.target.value || null })} placeholder="Что нужно сделать, критерий готовности, контекст" />
             </div>
 
-            <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} />
+            <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} attached={task.tools} editable={!readOnly} />
 
             <div className="section">
               <div className="section-head">Майндмап<span className="spacer" /></div>
@@ -108,10 +127,11 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
                       <span className="actions"><MindButton count={1} label="Открыть" onClick={() => onOpenMindmap(m.id)} /></span>
                     </div>
                   ))}</div>
-                ) : (
+                ) : readOnly ? <span className="hint">Майндмапа нет.</span> : (
                   <div className="row">
                     <MindButton count={0} label="Создать майндмап задачи" onClick={async () => {
-                      try { const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: draft.direction_ids[0] ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); }
+                      try { const d0 = store.directions.find((d) => draft.direction_ids.includes(d.id) && canEdit(d.access) && d.access !== "via");
+                      const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: d0?.id ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); }
                     }} />
                     <span className="hint">Разложить задачу на шаги, риски, вопросы.</span>
                   </div>
@@ -120,38 +140,48 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
             </div>
 
             <div className="danger-zone">
-              <span className="hint">Создана {showDateTime(task.created_at)}</span>
-              <button className="btn danger sm" onClick={remove}>Удалить задачу</button>
+              <span className="hint">Создана {showDateTime(task.created_at)}{task.owner && !isOwner ? ` · ${task.owner.name}` : ""}</span>
+              {isOwner && <button className="btn danger sm" onClick={remove}>Удалить задачу</button>}
             </div>
-          </div>
+          </fieldset>
 
           <div className="tm-side">
             <div className="tm-props">
               <div className="field">
                 <label>Статус</label>
-                <select className={`select st-${draft.status}`} value={draft.status} onChange={(e) => change({ status: e.target.value as TaskStatus })}>
+                <select className={`select st-${draft.status}`} value={draft.status} disabled={task.access === "view"} onChange={(e) => change({ status: e.target.value as TaskStatus })}>
                   {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
                 </select>
               </div>
               <div className="field">
+                <label>Проект</label>
+                <select className="select" value={draft.project_id ?? ""} disabled={readOnly} onChange={(e) => setProject(e.target.value ? Number(e.target.value) : null)}>
+                  <option value="">Без проекта</option>
+                  {projectOptions.map((p) => {
+                    const d = store.directions.find((x) => x.id === p.direction_id);
+                    return <option key={p.id} value={p.id}>{p.name}{d && draft.direction_ids.length !== 1 ? ` · ${d.name}` : ""}</option>;
+                  })}
+                </select>
+              </div>
+              <div className="field">
                 <label>Приоритет</label>
-                <select className="select" value={draft.priority} onChange={(e) => change({ priority: Number(e.target.value) })}>
+                <select className="select" value={draft.priority} disabled={readOnly} onChange={(e) => change({ priority: Number(e.target.value) })}>
                   <option value={1}>P1 — критично</option><option value={2}>P2 — высокий</option><option value={3}>P3 — обычный</option>
                   <option value={4}>P4 — низкий</option><option value={5}>P5 — когда-нибудь</option>
                 </select>
               </div>
               <div className="field">
                 <label>Дедлайн</label>
-                <input className="input" type="date" value={toDateInput(draft.deadline)} onChange={(e) => change({ deadline: e.target.value || null })} />
+                <input className="input" type="date" value={toDateInput(draft.deadline)} disabled={readOnly} onChange={(e) => change({ deadline: e.target.value || null })} />
               </div>
               <div className="field">
                 <label>Следующая проверка</label>
-                <input className="input" type="datetime-local" value={toDateTimeInput(draft.next_check_at)} onChange={(e) => change({ next_check_at: fromDateTimeInput(e.target.value) })} />
+                <input className="input" type="datetime-local" value={toDateTimeInput(draft.next_check_at)} disabled={readOnly} onChange={(e) => change({ next_check_at: fromDateTimeInput(e.target.value) })} />
               </div>
             </div>
 
-            <DelegationsSection store={store} taskId={task.id} />
-            <RemindersSection store={store} taskId={task.id} />
+            <DelegationsSection store={store} taskId={task.id} editable={editable} />
+            {editable ? <RemindersSection store={store} taskId={task.id} /> : null}
           </div>
         </div>
       </div>
@@ -160,7 +190,9 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
 }
 
 /* ---------- Тулы ---------- */
-function ToolsSection({ store, selected, onChange, taskId }: { store: Store; selected: number[]; onChange: (ids: number[]) => void; taskId: number }) {
+function ToolsSection({ store, selected, onChange, taskId, attached, editable }: { store: Store; selected: number[]; onChange: (ids: number[]) => void; taskId: number; attached: Tool[]; editable: boolean }) {
+  // тулы автора задачи, которых нет в моём справочнике (общая задача) — показываем, снимать нельзя
+  const foreign = attached.filter((t) => selected.includes(t.id) && !store.tools.some((x) => x.id === t.id));
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState<ToolType>("google_sheet");
@@ -180,7 +212,7 @@ function ToolsSection({ store, selected, onChange, taskId }: { store: Store; sel
   return (
     <div className="section">
       <div className="section-head">Тулы <span className="n">{selected.length}</span><span className="spacer" />
-        <button className="btn ghost sm" onClick={() => setAdding((v) => !v)}>{adding ? "Отмена" : "+ Новый тул"}</button>
+        {editable && <button className="btn ghost sm" onClick={() => setAdding((v) => !v)}>{adding ? "Отмена" : "+ Новый тул"}</button>}
       </div>
       {adding && (
         <div className="inline-form">
@@ -197,16 +229,17 @@ function ToolsSection({ store, selected, onChange, taskId }: { store: Store; sel
         </div>
       )}
       <div className="chips">
+        {foreign.map((t) => <span key={t.id} className="chip pick on" title={`${TOOL_TYPE_LABEL[t.type]} · тул автора задачи`}>{t.name}</span>)}
         {store.tools.map((t) => (
           <button key={t.id} className={`chip pick ${selected.includes(t.id) ? "on" : ""}`} onClick={() => toggle(t.id)} title={TOOL_TYPE_LABEL[t.type]}>
             {t.name}
           </button>
         ))}
-        {store.tools.length === 0 && !adding && <span className="hint">Тулов пока нет. Тул — это таблица, бот или документ, через который ведётся задача.</span>}
+        {store.tools.length === 0 && foreign.length === 0 && !adding && <span className="hint">{editable ? "Тулов пока нет. Тул — это таблица, бот или документ, через который ведётся задача." : "Тулов нет."}</span>}
       </div>
       {selected.length > 0 && (
         <div className="list">
-          {store.tools.filter((t) => selected.includes(t.id)).map((t) => (
+          {[...foreign, ...store.tools.filter((t) => selected.includes(t.id))].map((t) => (
             <div key={t.id} className="item">
               <span className="primary">{t.name}</span>
               <span className="actions">{t.url && <a className="btn ghost sm" href={t.url} target="_blank" rel="noreferrer">Открыть ↗</a>}</span>
@@ -220,7 +253,7 @@ function ToolsSection({ store, selected, onChange, taskId }: { store: Store; sel
 }
 
 /* ---------- Делегирование ---------- */
-function DelegationsSection({ store, taskId }: { store: Store; taskId: number }) {
+function DelegationsSection({ store, taskId, editable }: { store: Store; taskId: number; editable: boolean }) {
   const [items, setItems] = useState<Delegation[] | null>(null);
   const [adding, setAdding] = useState(false);
   const [personId, setPersonId] = useState<number | "new">(store.people[0]?.id ?? "new");
@@ -261,7 +294,7 @@ function DelegationsSection({ store, taskId }: { store: Store; taskId: number })
   return (
     <div className="section">
       <div className="section-head">Кому поручено <span className="n">{open.length}</span><span className="spacer" />
-        <button className="btn ghost sm" onClick={() => setAdding((v) => !v)}>{adding ? "Отмена" : "+ Поручить"}</button>
+        {editable && <button className="btn ghost sm" onClick={() => setAdding((v) => !v)}>{adding ? "Отмена" : "+ Поручить"}</button>}
       </div>
       {adding && (
         <div className="inline-form">
@@ -290,12 +323,12 @@ function DelegationsSection({ store, taskId }: { store: Store; taskId: number })
             return (
               <div key={d.id} className={`item ${d.status === "done" ? "muted" : ""}`}>
                 <span className="primary">{d.person.name}</span>
-                <span className="actions">
+                {editable && <span className="actions">
                   {d.status === "open"
                     ? <button className="btn ghost sm" onClick={() => setStatus(d, "done")}>Выполнено</button>
                     : <button className="btn ghost sm" onClick={() => setStatus(d, "open")}>Вернуть</button>}
                   <button className="btn danger sm" onClick={() => remove(d)} aria-label="Снять">×</button>
-                </span>
+                </span>}
                 <span className={`secondary ${late ? "over" : ""}`}>
                   {d.check_at ? `${late ? "⚑ просрочена проверка " : "проверить "}${showDateTime(d.check_at)}` : `поручено ${showDateTime(d.assigned_at)}`}
                   {d.comment ? ` · ${d.comment}` : ""}

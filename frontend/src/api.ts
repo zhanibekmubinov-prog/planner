@@ -45,11 +45,30 @@ export type DelegationStatus = "open" | "done";
 export type ToolType = "google_sheet" | "excel_sharepoint" | "telegram_bot" | "notion" | "other";
 export type Channel = "telegram" | "email" | "outlook_calendar";
 
+// Уровень доступа к сущности (см. backend/app/scope.py): owner — моё; edit/view — открыли мне; via — контейнер виден
+// только из-за доступного содержимого; assignee — задача поручена мне.
+export type Access = "owner" | "edit" | "view" | "via" | "assignee";
+export const canEdit = (a?: Access | null): boolean => !a || a === "owner" || a === "edit";
+export const isShared = (a?: Access | null): boolean => a === "edit" || a === "view";
+
 export type Direction = {
   id: number; name: string; description?: string | null; goal?: string | null;
-  color?: string | null; status: DirectionStatus; created_at: string;
+  color?: string | null; status: DirectionStatus; created_at: string; owner?: UserBrief | null; access?: Access | null;
 };
-export type DirectionIn = Omit<Direction, "id" | "created_at">;
+export type DirectionIn = Omit<Direction, "id" | "created_at" | "owner" | "access">;
+
+export type Project = {
+  id: number; direction_id: number; name: string; description?: string | null; goal?: string | null;
+  color?: string | null; status: DirectionStatus; created_at: string; owner?: UserBrief | null; access?: Access | null;
+};
+export type ProjectIn = Omit<Project, "id" | "created_at" | "owner" | "access">;
+
+export type ShareEntity = "direction" | "project" | "task";
+export type Permission = "view" | "edit";
+export type Share = { id: number; entity_type: ShareEntity; entity_id: number; permission: Permission; user: UserBrief; created_at: string };
+export type SharedWithMe = { entity_type: ShareEntity; entity_id: number; permission: Permission; name: string; direction_id?: number | null; shared_by?: UserBrief | null; created_at: string };
+export const PERMISSION_LABEL: Record<Permission, string> = { view: "Смотреть", edit: "Редактировать" };
+export const ENTITY_LABEL: Record<ShareEntity, string> = { direction: "Направление", project: "Проект", task: "Задача" };
 
 export type Tool = {
   id: number; name: string; type: ToolType; url?: string | null;
@@ -61,10 +80,11 @@ export type Task = {
   id: number; title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; outlook_event_id?: string | null;
   created_at: string; updated_at: string; directions: Direction[]; tools: Tool[]; owner?: UserBrief | null;
+  project_id?: number | null; access?: Access | null; assigned_to_me?: boolean;
 };
 export type TaskIn = {
   title: string; description?: string | null; status: TaskStatus; priority: number;
-  deadline?: string | null; next_check_at?: string | null; direction_ids: number[]; tool_ids: number[];
+  deadline?: string | null; next_check_at?: string | null; direction_ids: number[]; tool_ids: number[]; project_id?: number | null;
 };
 
 export type User = { id: number; email: string; name: string; is_admin: boolean; telegram_chat_id?: string | null; digest_enabled: boolean };
@@ -108,6 +128,8 @@ export const DIRECTION_STATUS_LABEL: Record<DirectionStatus, string> = { active:
 // Палитра направлений — используется, если у направления не задан свой цвет.
 export const DIRECTION_COLORS = ["#2F6FED", "#0E9F6E", "#D97706", "#DC2626", "#7C3AED", "#0891B2", "#BE185D", "#65A30D"];
 export const dirColor = (d: Direction) => d.color || DIRECTION_COLORS[d.id % DIRECTION_COLORS.length];
+/** Цвет проекта: свой или цвет направления. */
+export const projColor = (p: Project, dirs: Direction[]) => p.color || (() => { const d = dirs.find((x) => x.id === p.direction_id); return d ? dirColor(d) : "var(--line-strong)"; })();
 
 // ---- Преобразование дат между <input> и API ----
 export const toDateInput = (iso?: string | null) => (iso ? iso.slice(0, 10) : "");

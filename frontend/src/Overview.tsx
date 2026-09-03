@@ -60,7 +60,7 @@ export default function Overview({ store, onOpenDirection, onOpenTask, onNewDire
   const reports = useMemo(() => {
     const now = Date.now();
     return store.directions
-      .filter((d) => d.status !== "archived")
+      .filter((d) => d.status !== "archived" && d.access !== "via")
       .map((d) => buildReport(d, store.tasks, now))
       .sort((a, b) => (a.direction.status === "paused" ? 1 : 0) - (b.direction.status === "paused" ? 1 : 0) || b.score - a.score);
   }, [store.directions, store.tasks]);
@@ -123,6 +123,9 @@ function DirectionCard({ r, onOpen, onTask, onMenu }: { r: DirectionReport; onOp
         <span className={`lvl lvl-${r.level.key}`} title={r.level.hint}>{paused ? "На паузе" : r.level.label}</span>
         <button className="more" onClick={onMenu} title="Действия с направлением" aria-label={`Действия: ${r.direction.name}`}>⋯</button>
       </header>
+      {(r.direction.access === "edit" || r.direction.access === "view") && (
+        <span className="tag shared-tag ov-shared">⇄ открыл {r.direction.owner?.name ?? "коллега"} · {r.direction.access === "edit" ? "редактирование" : "просмотр"}</span>
+      )}
       {r.direction.goal && <p className="ov-goal">{r.direction.goal}</p>}
 
       {/* Шкала внимания: 0 — всё под контролем, 100 — направление брошено */}

@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from . import digest, models
 from .config import settings
 from .crud import log
-from .scope import is_assignee, my_person_id, visible_tasks_query
+from .scope import (OWNER, is_assignee, my_person_id, project_access, stamp, task_access, visible_directions, visible_projects,
+                    visible_tasks_query)
 
 TZ = ZoneInfo(settings.app_timezone)
 STATUS_RU = {"backlog": "бэклог", "in_progress": "в работе", "waiting": "ждём", "done": "выполнено"}
@@ -135,10 +136,18 @@ def _match(items, ref, label: str, name_attr: str = "name"):
 
 
 def my_directions(db: Session, user: models.User, include_archived=True) -> list[models.Direction]:
-    q = select(models.Direction).where(models.Direction.owner_id == user.id)
+    """Свои направления + открытые мне на просмотр/редактирование (access в объекте)."""
+    dirs = [d for d in visible_directions(db, user) if d.access != "via"]
     if not include_archived:
-        q = q.where(models.Direction.status != models.DirectionStatus.archived)
-    return db.scalars(q.order_by(models.Direction.id)).all()
+        dirs = [d for d in dirs if d.status != models.DirectionStatus.archived]
+    return dirs
+
+
+def my_projects(db: Session, user: models.User, include_archived=True) -> list[models.Project]:
+    ps = [p for p in visible_projects(db, user) if p.access != "via"]
+    if not include_archived:
+        ps = [p for p in ps if p.status != models.DirectionStatus.archived]
+    return ps
 
 
 def visible_tasks(db: Session, user: models.User) -> list[models.Task]:
@@ -161,9 +170,26 @@ def resolve_person(db, ref) -> models.Person:
     return _match(all_people(db), ref, "Человек")
 
 
+def resolve_project(db, user, ref, direction: models.Direction | None = None) -> models.Project:
+    items = my_projects(db, user)
+    if direction is not None:
+        items = [p for p in items if p.direction_id == direction.id]
+    return _match(items, ref, "Проект")
+
+
+def _editable(obj, what: str):
+    acc = getattr(obj, "access", OWNER)
+    if acc not in (OWNER, "edit"):
+        raise ToolError(f"{what} открыт(о) вам только на просмотр — менять нельзя")
+    return obj
+
+
 def _owned_task(db, user, ref) -> models.Task:
     t = resolve_task(db, user, ref)
-    if t.owner_id != user.id:
+    acc = task_access(db, user, t)
+    if acc == "view":
+        raise ToolError(f"Задача «{t.title}» открыта вам только на просмотр.")
+    if acc not in (OWNER, "edit"):
         raise ToolError(f"Задача «{t.title}» поручена вам, а не создана вами — менять можно только статус (set_task_status) и отчёт (update_delegation).")
     return t
 
@@ -192,6 +218,7 @@ def task_brief(t: models.Task) -> dict:
         "overdue": bool(open_ and t.deadline and t.deadline < today),
         "next_check_at": _local(t.next_check_at),
         "directions": [d.name for d in t.directions],
+        "project": t.project.name if t.project else None, "project_id": t.project_id,
         "assignees": [f"{d.person.name}{' ✓' if d.status == models.DelegationStatus.done else ''}" for d in t.delegations],
         "owner": t.owner.name if t.owner else None,
         "updated_at": _local(t.updated_at),
@@ -212,7 +239,25 @@ def task_full(t: models.Task) -> dict:
 
 
 def direction_brief(d: models.Direction) -> dict:
-    return {"id": d.id, "name": d.name, "status": d.status.value, "status_ru": DIR_STATUS_RU[d.status.value], "goal": d.goal, "color": d.color}
+    out = {"id": d.id, "name": d.name, "status": d.status.value, "status_ru": DIR_STATUS_RU[d.status.value], "goal": d.goal, "color": d.color}
+    acc = getattr(d, "access", None)
+    if acc and acc != OWNER:
+        out["shared_by"] = d.owner.name if d.owner else None; out["access"] = acc
+    return out
+
+
+def project_brief(p: models.Project, tasks: list[models.Task] | None = None) -> dict:
+    out = {"id": p.id, "name": p.name, "direction": p.direction.name, "direction_id": p.direction_id, "status": p.status.value,
+           "status_ru": DIR_STATUS_RU[p.status.value], "goal": p.goal}
+    if tasks is not None:
+        mine = [t for t in tasks if t.project_id == p.id]
+        out.update({"tasks_total": len(mine), "open": sum(1 for t in mine if t.status != models.TaskStatus.done),
+                    "in_progress": sum(1 for t in mine if t.status == models.TaskStatus.in_progress),
+                    "overdue": sum(1 for t in mine if t.status != models.TaskStatus.done and t.deadline and t.deadline < _today())})
+    acc = getattr(p, "access", None)
+    if acc and acc != OWNER:
+        out["shared_by"] = p.owner.name if p.owner else None; out["access"] = acc
+    return out
 
 
 def report_out(r: digest.DirReport) -> dict:
@@ -240,16 +285,17 @@ def t_get_overview(db, user, a):
 
 def t_list_directions(db, user, a):
     dirs = my_directions(db, user, include_archived=bool(a.get("include_archived")))
-    tasks = db.scalars(select(models.Task).where(models.Task.owner_id == user.id)).unique().all()
+    tasks = visible_tasks(db, user)
     now = _now()
     return {"directions": [report_out(digest.build_report(d, tasks, now)) for d in dirs]}
 
 
 def t_get_direction_summary(db, user, a):
     d = resolve_direction(db, user, a.get("direction"))
-    tasks = db.scalars(select(models.Task).where(models.Task.owner_id == user.id)).unique().all()
+    tasks = visible_tasks(db, user)
     r = digest.build_report(d, tasks, _now())
     mine = [t for t in tasks if any(x.id == d.id for x in t.directions)]
+    projects = [p for p in my_projects(db, user) if p.direction_id == d.id]
     by_status = {s: [task_brief(t) for t in mine if t.status.value == s] for s in ("in_progress", "waiting", "backlog", "done")}
     people: dict[str, dict] = {}
     for t in mine:
@@ -257,6 +303,8 @@ def t_get_direction_summary(db, user, a):
             p = people.setdefault(dl.person.name, {"open": 0, "done": 0})
             p["done" if dl.status == models.DelegationStatus.done else "open"] += 1
     return {**report_out(r), "description": d.description,
+            "projects": [project_brief(p, mine) for p in projects],
+            "tasks_without_project": sum(1 for t in mine if not t.project_id),
             "tasks": by_status if a.get("include_done", True) else {k: v for k, v in by_status.items() if k != "done"},
             "people": people,
             "tools": [{"id": x.id, "name": x.name, "type": x.type.value} for x in d.tools],
@@ -270,10 +318,15 @@ def t_list_tasks(db, user, a):
     if scope == "assigned_to_me":
         tasks = [t for t in tasks if t.owner_id != user.id and pid and any(d.person_id == pid for d in t.delegations)]
     elif scope == "mine":
-        tasks = [t for t in tasks if t.owner_id == user.id]
+        # мои + открытые мне (общие); порученные другими — отдельно (assigned_to_me)
+        tasks = [t for t in tasks if t.owner_id == user.id or task_access(db, user, t) in (OWNER, "edit", "view")]
+    d = None
     if a.get("direction"):
         d = resolve_direction(db, user, a["direction"])
         tasks = [t for t in tasks if any(x.id == d.id for x in t.directions)]
+    if a.get("project"):
+        p = resolve_project(db, user, a["project"], d)
+        tasks = [t for t in tasks if t.project_id == p.id]
     if a.get("person"):
         p = resolve_person(db, a["person"])
         tasks = [t for t in tasks if any(dl.person_id == p.id for dl in t.delegations)]
@@ -391,7 +444,7 @@ def t_create_direction(db, user, a):
 
 
 def t_update_direction(db, user, a):
-    d = resolve_direction(db, user, a.get("direction"))
+    d = _editable(resolve_direction(db, user, a.get("direction")), "Направление")
     changed = []
     for k in ("name", "goal", "description", "color"):
         if a.get(k) is not None:
@@ -448,12 +501,22 @@ def t_create_task(db, user, a):
                 db.add(dirs[-1]); db.flush(); log(db, dirs[-1], "create", {"via": "mcp"})
             else:
                 raise
-    t = models.Task(title=title, description=a.get("description"), owner_id=user.id,
+    project = None
+    if a.get("project"):
+        project = _editable(resolve_project(db, user, a["project"], dirs[0] if len(dirs) == 1 else None), "Проект")
+        if all(x.id != project.direction_id for x in dirs):
+            dirs.append(project.direction)
+    for d in dirs:
+        _editable(d, f"Направление «{d.name}»")
+    # задача в чужом (открытом мне) направлении принадлежит его хозяину — доска остаётся его
+    owner_id = user.id if (not dirs or any(x.owner_id == user.id for x in dirs)) else (project.owner_id if project and project.owner_id else dirs[0].owner_id or user.id)
+    t = models.Task(title=title, description=a.get("description"), owner_id=owner_id,
                     status=parse_status(a["status"]) if a.get("status") else models.TaskStatus.backlog,
                     priority=parse_priority(a["priority"]) if a.get("priority") is not None else 3,
                     deadline=parse_date(a.get("deadline"), "deadline"), next_check_at=parse_dt(a.get("next_check_at"), "next_check_at"))
     t.directions = dirs
-    db.add(t); db.flush(); log(db, t, "create", {"via": "mcp"})
+    t.project = project
+    db.add(t); db.flush(); log(db, t, "create", {"via": "mcp", "by": user.id})
     check_at = parse_dt(a.get("check_at"), "check_at")
     for ref in a.get("assign_to") or []:
         p = _find_or_create_person(db, ref, bool(a.get("create_person_if_missing")))
@@ -481,8 +544,16 @@ def t_update_task(db, user, a):
     for ref in a.get("remove_directions") or []:
         d = resolve_direction(db, user, ref)
         if d in t.directions: t.directions.remove(d); changed.append(f"-{d.name}")
+    if "project" in a:
+        if a["project"] in (None, "", "null", "none", "без проекта"):
+            t.project = None; changed.append("project: без проекта")
+        else:
+            p = _editable(resolve_project(db, user, a["project"]), "Проект")
+            t.project = p
+            if all(x.id != p.direction_id for x in t.directions): t.directions.append(p.direction)
+            changed.append(f"project: {p.name}")
     if not changed:
-        raise ToolError("Нечего менять: передайте title, description, priority, deadline, next_check_at, status, add_directions или remove_directions")
+        raise ToolError("Нечего менять: передайте title, description, priority, deadline, next_check_at, status, project, add_directions или remove_directions")
     if "status" not in changed: log(db, t, "update", {"via": "mcp", "fields": changed})
     db.commit(); db.refresh(t)
     return {"updated": changed, "task": task_full(t)}
@@ -490,8 +561,9 @@ def t_update_task(db, user, a):
 
 def t_set_task_status(db, user, a):
     t = resolve_task(db, user, a.get("task"))
-    if t.owner_id != user.id and not is_assignee(db, user, t):
-        raise ToolError("Менять статус может владелец задачи или исполнитель")
+    acc = task_access(db, user, t)
+    if acc == "view" or acc is None:
+        raise ToolError("Менять статус может владелец задачи, редактор или исполнитель")
     old, t.status = t.status, parse_status(a.get("status"))
     log(db, t, "status_change", {"from": old.value, "to": t.status.value, "by": user.id, "via": "mcp"})
     if t.status == models.TaskStatus.done and a.get("close_delegations", True):
@@ -615,6 +687,125 @@ def t_add_tool(db, user, a):
                                       "tasks": [t.title for t in tool.tasks], "directions": [d.name for d in tool.directions]}}
 
 
+
+# ── Проекты (v0.6) ────────────────────────────────────────────────────────────
+
+def t_list_projects(db, user, a):
+    ps = my_projects(db, user, include_archived=bool(a.get("include_archived")))
+    if a.get("direction"):
+        d = resolve_direction(db, user, a["direction"])
+        ps = [p for p in ps if p.direction_id == d.id]
+    tasks = visible_tasks(db, user)
+    return {"projects": [project_brief(p, tasks) for p in ps]}
+
+
+def t_create_project(db, user, a):
+    name = str(a.get("name") or "").strip()
+    if not name:
+        raise ToolError("name: укажите название проекта")
+    d = _editable(resolve_direction(db, user, a.get("direction")), "Направление")
+    dup = [p for p in my_projects(db, user) if p.direction_id == d.id and p.name.strip().lower() == name.lower()]
+    if dup:
+        raise ToolError(f"Проект «{dup[0].name}» в направлении «{d.name}» уже есть (id {dup[0].id}).")
+    p = models.Project(name=name, goal=a.get("goal"), description=a.get("description"), color=a.get("color"), direction_id=d.id,
+                       owner_id=d.owner_id if d.owner_id else user.id)
+    db.add(p); db.flush(); log(db, p, "create", {"via": "mcp", "by": user.id}); db.commit(); db.refresh(p)
+    stamp(p, project_access(db, user, p))
+    return {"created": True, "project": project_brief(p)}
+
+
+def t_update_project(db, user, a):
+    p = _editable(resolve_project(db, user, a.get("project")), "Проект")
+    changed = []
+    for k in ("name", "goal", "description", "color"):
+        if a.get(k) is not None:
+            val = str(a[k]).strip()
+            if k == "name" and not val:
+                raise ToolError("name: название не может быть пустым")
+            setattr(p, k, val or None); changed.append(k)
+    if a.get("status") is not None:
+        key = str(a["status"]).strip().lower()
+        if key not in DIR_STATUS_ALIASES:
+            raise ToolError("status: active (активно) | paused (пауза) | archived (архив)")
+        p.status = models.DirectionStatus(DIR_STATUS_ALIASES[key]); changed.append("status")
+    if not changed:
+        raise ToolError("Нечего менять: передайте name, goal, description, color или status")
+    log(db, p, "update", {"via": "mcp", "fields": changed}); db.commit(); db.refresh(p)
+    return {"updated": changed, "project": project_brief(p)}
+
+
+# ── Совместный доступ (v0.6) ─────────────────────────────────────────────────
+
+def _share_target(db, user, a):
+    et = str(a.get("entity_type") or "").strip().lower()
+    ref = a.get("entity")
+    if et in ("direction", "направление"):
+        obj, et = resolve_direction(db, user, ref), "direction"
+    elif et in ("project", "проект"):
+        obj, et = resolve_project(db, user, ref), "project"
+    elif et in ("task", "задача"):
+        obj, et = resolve_task(db, user, ref), "task"
+    else:
+        raise ToolError("entity_type: direction | project | task")
+    if obj.owner_id != user.id:
+        raise ToolError("Управлять доступом может только владелец")
+    return et, obj
+
+
+def t_share_access(db, user, a):
+    from .routers.shares import find_or_invite_user
+    from fastapi import HTTPException
+    et, obj = _share_target(db, user, a)
+    perm = str(a.get("permission") or "view").strip().lower()
+    perm = {"view": "view", "просмотр": "view", "смотреть": "view", "edit": "edit", "редактирование": "edit", "редактировать": "edit"}.get(perm)
+    if not perm:
+        raise ToolError("permission: view (смотреть) | edit (редактировать)")
+    try:
+        target = find_or_invite_user(db, str(a.get("email") or ""))
+    except HTTPException as e:
+        raise ToolError(e.detail)
+    if target.id == user.id:
+        raise ToolError("Это вы сами")
+    sh = db.scalar(select(models.Share).where(models.Share.entity_type == et, models.Share.entity_id == obj.id, models.Share.user_id == target.id))
+    if sh:
+        sh.permission = perm
+    else:
+        sh = models.Share(entity_type=et, entity_id=obj.id, user_id=target.id, permission=perm, granted_by=user.id); db.add(sh)
+    log(db, obj, "share", {"via": "mcp", "to": target.email, "permission": perm}); db.commit()
+    name = getattr(obj, "title", None) or obj.name
+    return {"shared": True, "entity_type": et, "name": name, "with": {"name": target.name, "email": target.email, "in_planner": target.ms_oid is not None},
+            "permission": perm, "permission_ru": "редактирование" if perm == "edit" else "просмотр"}
+
+
+def t_revoke_access(db, user, a):
+    et, obj = _share_target(db, user, a)
+    email = str(a.get("email") or "").strip().lower()
+    target = db.scalar(select(models.User).where(models.User.email == email))
+    sh = target and db.scalar(select(models.Share).where(models.Share.entity_type == et, models.Share.entity_id == obj.id, models.Share.user_id == target.id))
+    if not sh:
+        raise ToolError(f"У {email} нет доступа к этому объекту")
+    db.delete(sh); log(db, obj, "unshare", {"via": "mcp", "from": email}); db.commit()
+    return {"revoked": True, "email": email}
+
+
+def t_list_shares(db, user, a):
+    if a.get("entity_type") or a.get("entity"):
+        et, obj = _share_target(db, user, a)
+        rows = db.scalars(select(models.Share).where(models.Share.entity_type == et, models.Share.entity_id == obj.id)).all()
+        return {"entity_type": et, "name": getattr(obj, "title", None) or obj.name,
+                "shares": [{"name": s.user.name, "email": s.user.email, "permission": s.permission} for s in rows]}
+    # без параметров — что открыли мне
+    rows = db.scalars(select(models.Share).where(models.Share.user_id == user.id)).all()
+    out = []
+    for s in rows:
+        model = {"direction": models.Direction, "project": models.Project, "task": models.Task}[s.entity_type]
+        obj = db.get(model, s.entity_id)
+        if obj:
+            out.append({"entity_type": s.entity_type, "id": obj.id, "name": getattr(obj, "title", None) or obj.name,
+                        "permission": s.permission, "shared_by": s.granter.name if s.granter else None})
+    return {"shared_with_me": out}
+
+
 # ── Описание инструментов для Claude ─────────────────────────────────────────
 
 def _s(desc, **extra): return {"type": "string", "description": desc, **extra}
@@ -640,11 +831,14 @@ TOOLS: list[dict] = [
      "description": "Поиск задач с фильтрами: направление, статус, человек, просроченные, срок в ближайшие N дней, текст. По умолчанию — мои открытые задачи. "
                     "scope=assigned_to_me — задачи, которые поручили мне другие («мне поручено»).",
      "inputSchema": {"type": "object", "properties": {
-         "scope": _s("mine (мои задачи, по умолчанию) | assigned_to_me (поручены мне) | all", enum=["mine", "assigned_to_me", "all"]),
-         "direction": _s(f"направление: {REF}"), "person": _s(f"исполнитель: {REF}"),
+         "scope": _s("mine (мои и открытые мне задачи, по умолчанию) | assigned_to_me (поручены мне) | all", enum=["mine", "assigned_to_me", "all"]),
+         "direction": _s(f"направление: {REF}"), "project": _s(f"проект: {REF}"), "person": _s(f"исполнитель: {REF}"),
          "status": _s("backlog | in_progress | waiting | done (можно по-русски: бэклог, в работе, ждём, выполнено)"),
          "include_done": _b("включить выполненные (по умолчанию нет)"), "overdue_only": _b("только просроченные"),
          "due_within_days": _i("дедлайн в ближайшие N дней"), "query": _s("текст для поиска в названии/описании"), "limit": _i("максимум записей (по умолчанию 50)")}}},
+    {"name": "list_projects", "handler": t_list_projects,
+     "description": "Проекты (внутри направлений: Направление → Проекты → Задачи) со статистикой задач. Можно отфильтровать по направлению.",
+     "inputSchema": {"type": "object", "properties": {"direction": _s(f"направление: {REF}"), "include_archived": _b("включить архивные")}}},
     {"name": "get_task", "handler": t_get_task,
      "description": "Карточка задачи целиком: описание, направления, поручения с отчётами исполнителей, напоминания, тулы.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}")}, "required": ["task"]}},
@@ -670,12 +864,23 @@ TOOLS: list[dict] = [
      "inputSchema": {"type": "object", "properties": {"direction": _s(f"направление: {REF}"), "name": _s("новое название"), "goal": _s("цель"),
                                                       "description": _s("описание"), "color": _s("#hex"), "status": _s("active | paused | archived")},
                      "required": ["direction"]}},
+    {"name": "create_project", "handler": t_create_project,
+     "description": "Создать проект внутри направления («заведи проект Договор бурение в Эмбе»). Задачи потом привязываются к проекту.",
+     "inputSchema": {"type": "object", "properties": {"direction": _s(f"направление: {REF}"), "name": _s("название проекта"), "goal": _s("цель"),
+                                                      "description": _s("описание"), "color": _s("#hex (необязательно, иначе цвет направления)")},
+                     "required": ["direction", "name"]}},
+    {"name": "update_project", "handler": t_update_project,
+     "description": "Изменить проект: название, цель, описание, цвет, статус (active | paused | archived). Удаления нет — вместо него archived.",
+     "inputSchema": {"type": "object", "properties": {"project": _s(f"проект: {REF}"), "name": _s("новое название"), "goal": _s("цель"),
+                                                      "description": _s("описание"), "color": _s("#hex"), "status": _s("active | paused | archived")},
+                     "required": ["project"]}},
     {"name": "create_task", "handler": t_create_task,
      "description": "Создать задачу («запиши», «добавь задачу», «поручи X сделать Y»). Одним вызовом можно сразу привязать к направлениям, поручить людям, "
                     "поставить дедлайн, дату проверки и напоминание. Даты — ISO (YYYY-MM-DD, дата-время YYYY-MM-DDTHH:MM по местному времени).",
      "inputSchema": {"type": "object", "properties": {
          "title": _s("название задачи — коротко, глаголом"), "description": _s("подробности, контекст"),
-         "directions": _arr(f"направления: {REF}; можно несколько"), "create_direction_if_missing": _b("создать направление, если такого нет (по умолчанию нет — лучше уточнить)"),
+         "directions": _arr(f"направления: {REF}; можно несколько"), "project": _s(f"проект внутри направления: {REF}; направление проекта привяжется само"),
+         "create_direction_if_missing": _b("создать направление, если такого нет (по умолчанию нет — лучше уточнить)"),
          "priority": _i("1 (самый важный) … 5 (наименее важный); по умолчанию 3"),
          "status": _s("backlog (по умолчанию) | in_progress | waiting | done"),
          "deadline": _s("дедлайн YYYY-MM-DD"), "next_check_at": _s("когда мне самому проверить задачу, ISO дата-время"),
@@ -685,10 +890,11 @@ TOOLS: list[dict] = [
          "remind_message": _s("текст напоминания"), "remind_recipient": _s("owner | assignees | both")},
          "required": ["title"]}},
     {"name": "update_task", "handler": t_update_task,
-     "description": "Изменить задачу: название, описание, приоритет, дедлайн (null — убрать), дату проверки, статус, добавить/убрать направления. Только для своих задач.",
+     "description": "Изменить задачу: название, описание, приоритет, дедлайн (null — убрать), дату проверки, статус, проект, добавить/убрать направления. Для своих задач и открытых на редактирование.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "title": _s("новое название"), "description": _s("новое описание (заменяет)"),
                                                       "priority": _i("1–5"), "deadline": _s("YYYY-MM-DD или null"), "next_check_at": _s("ISO дата-время или null"),
                                                       "status": _s("backlog | in_progress | waiting | done"),
+                                                      "project": _s("перенести в проект (название/id) или null — убрать из проекта"),
                                                       "add_directions": _arr("добавить направления"), "remove_directions": _arr("убрать направления")},
                      "required": ["task"]}},
     {"name": "set_task_status", "handler": t_set_task_status,
@@ -730,6 +936,21 @@ TOOLS: list[dict] = [
      "inputSchema": {"type": "object", "properties": {"name": _s("название"), "type": _s("google_sheet | excel_sharepoint | telegram_bot | notion | other"),
                                                       "url": _s("ссылка"), "note": _s("заметка"), "tasks": _arr("задачи"), "directions": _arr("направления")},
                      "required": ["name"]}},
+    # совместный доступ
+    {"name": "share_access", "handler": t_share_access,
+     "description": "Открыть коллеге доступ к направлению, проекту или задаче («поделись Эмбой с Нурланом», «дай доступ на редактирование»). "
+                    "Приглашение по рабочей почте — можно даже если человек ещё не входил в планнер. Только для своих объектов.",
+     "inputSchema": {"type": "object", "properties": {"entity_type": _s("direction | project | task"), "entity": _s(f"объект: {REF}"),
+                                                      "email": _s("рабочая почта коллеги, напр. n.abilkhanov@cis.kz"),
+                                                      "permission": _s("view (смотреть, по умолчанию) | edit (редактировать)")},
+                     "required": ["entity_type", "entity", "email"]}},
+    {"name": "revoke_access", "handler": t_revoke_access,
+     "description": "Закрыть коллеге доступ к направлению/проекту/задаче.",
+     "inputSchema": {"type": "object", "properties": {"entity_type": _s("direction | project | task"), "entity": _s(f"объект: {REF}"), "email": _s("почта коллеги")},
+                     "required": ["entity_type", "entity", "email"]}},
+    {"name": "list_shares", "handler": t_list_shares,
+     "description": "Кому открыт мой объект (укажите entity_type и entity) или — без параметров — что открыли мне другие («общие»).",
+     "inputSchema": {"type": "object", "properties": {"entity_type": _s("direction | project | task"), "entity": _s(f"объект: {REF}")}}},
 ]
 _HANDLERS = {t["name"]: t["handler"] for t in TOOLS}
 
@@ -741,7 +962,7 @@ def tools_for(user: models.User) -> list[dict]:
 def instructions_for(user: models.User) -> str:
     now = _now().astimezone(TZ)
     return (
-        f"CIS Planner — рабочий планнер-таскборд пользователя {user.name} ({user.email}): направления развития → задачи → поручения людям → "
+        f"CIS Planner — рабочий планнер-таскборд пользователя {user.name} ({user.email}): направления развития → проекты → задачи → поручения людям → "
         f"сроки и напоминания (Telegram, почта, календарь Outlook). Сейчас {now.strftime('%Y-%m-%d %H:%M')} ({settings.app_timezone}), "
         f"{['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'][now.weekday()]}.\n"
         "ПРАВИЛО: слова «запиши», «добавь задачу», «поручи», «делегируй», «напомни», «поставь срок/дедлайн», «отметь выполненным», «возьми в работу», "
@@ -753,7 +974,9 @@ def instructions_for(user: models.User) -> str:
         "«напомни в 10» — сегодня в 10:00, если ещё не прошло, иначе завтра.\n"
         "После записи подтверждай одной фразой: что создано, в каком направлении, срок, кому поручено. Сводки пересказывай кратко, по делу, "
         "выделяя просроченное и то, что требует внимания; цифры не выдумывай — только из ответа инструментов.\n"
-        "Удалять ничего нельзя (нет такого инструмента): вместо удаления — статус done, направление в paused/archived, поручение status=open→done."
+        "Удалять ничего нельзя (нет такого инструмента): вместо удаления — статус done, направление/проект в paused/archived, поручение status=open→done.\n"
+        "Проекты: задача может лежать в проекте внутри направления («в Эмбе проект Договор основной») или прямо в направлении. "
+        "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие»."
     )
 
 

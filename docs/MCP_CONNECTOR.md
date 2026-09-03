@@ -69,3 +69,6 @@
 - Настроек в Entra не требуется: используется существующий redirect `/api/auth/callback`.
 - Вызовы инструментов пишутся в лог бэкенда (`mcp tools/call <имя> by <почта>`), выдача доступа — в `activity_log`
   (`McpClient/authorized`). Записи, сделанные через Claude, помечены в `activity_log` `{"via": "mcp"}`.
+
+## v0.6 — проекты и совместный доступ
+Новые инструменты: `list_projects`, `create_project`, `update_project` (проекты внутри направлений: «заведи проект Договор бурение в Эмбе»), `share_access` / `revoke_access` / `list_shares` («поделись Эмбой с n.abilkhanov@cis.kz на редактирование», «что мне открыли»). `create_task` и `update_task` принимают `project`, `list_tasks` фильтрует по `project`. Через коннектор видно и то, что открыли вам коллеги (с пометкой `shared_by`/`access`).

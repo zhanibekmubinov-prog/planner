@@ -36,6 +36,51 @@ class DirectionIn(BaseModel):
 class DirectionOut(DirectionIn, ORM):
     id: int
     created_at: datetime
+    owner: UserBrief | None = None
+    access: str | None = None   # owner | edit | view | via (см. scope.py)
+
+
+class ProjectIn(BaseModel):
+    direction_id: int
+    name: str
+    description: str | None = None
+    goal: str | None = None
+    color: str | None = None
+    status: DirectionStatus = DirectionStatus.active
+
+class ProjectOut(ProjectIn, ORM):
+    id: int
+    created_at: datetime
+    owner: UserBrief | None = None
+    access: str | None = None
+
+
+class ShareIn(BaseModel):
+    entity_type: str        # direction | project | task
+    entity_id: int
+    email: str
+    permission: str = "view"  # view | edit
+
+class SharePermissionIn(BaseModel):
+    permission: str
+
+class ShareOut(ORM):
+    id: int
+    entity_type: str
+    entity_id: int
+    permission: str
+    user: UserBrief
+    created_at: datetime
+
+class SharedWithMe(BaseModel):
+    """Строка раздела «Общие»: что и кто мне открыл."""
+    entity_type: str
+    entity_id: int
+    permission: str
+    name: str
+    direction_id: int | None = None
+    shared_by: UserBrief | None = None
+    created_at: datetime
 
 
 class TaskIn(BaseModel):
@@ -47,6 +92,7 @@ class TaskIn(BaseModel):
     next_check_at: datetime | None = None
     direction_ids: list[int] = []
     tool_ids: list[int] = []
+    project_id: int | None = None
 
 class TaskOut(ORM):
     id: int
@@ -62,6 +108,9 @@ class TaskOut(ORM):
     directions: list[DirectionOut]
     tools: list["ToolOut"]
     owner: UserBrief | None = None
+    project_id: int | None = None
+    access: str | None = None          # owner | edit | view | assignee
+    assigned_to_me: bool = False
 
 
 class PersonIn(BaseModel):

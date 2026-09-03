@@ -21,6 +21,9 @@ def make_router(prefix: str, model, In, Out, order):
     @r.put("/{id}", response_model=Out)
     def update(id: int, data: In, db: Session = Depends(get_db)):
         obj = get_or_404(db, model, id)
+        # Поручение перенесли на другую дату проверки — напоминание должно прийти снова
+        if model is models.Delegation and getattr(obj, "check_at", None) != data.model_dump().get("check_at"):
+            obj.notified_at = None
         for k, v in data.model_dump().items(): setattr(obj, k, v)
         db.commit(); return obj
 

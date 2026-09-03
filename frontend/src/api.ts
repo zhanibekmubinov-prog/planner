@@ -57,9 +57,9 @@ export type PersonIn = Omit<Person, "id">;
 
 export type Delegation = {
   id: number; task_id: number; person_id: number; check_at?: string | null; comment?: string | null;
-  status: DelegationStatus; assigned_at: string; person: Person;
+  status: DelegationStatus; assigned_at: string; notified_at?: string | null; person: Person;
 };
-export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "person">;
+export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at" | "person">;
 
 export type Reminder = { id: number; task_id: number; fire_at: string; channels: Channel[]; message?: string | null; sent_at?: string | null };
 export type ReminderIn = Omit<Reminder, "id" | "sent_at">;

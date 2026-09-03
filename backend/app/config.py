@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     app_timezone: str = "Asia/Oral"          # для форматирования времени в сообщениях
     frontend_url: str = ""                    # ссылка «открыть в планнере» в сообщениях
 
+    # Утренняя сводка: время по app_timezone, каналы через запятую; пусто = выключено
+    digest_time: str = "08:30"
+    digest_channels: str = "telegram,email"
+    digest_weekdays_only: bool = False
+
     telegram_bot_token: str = ""              # от @BotFather
     telegram_chat_id: str = ""                # ваш chat id (владелец планнера)
 
@@ -27,6 +32,10 @@ class Settings(BaseSettings):
     @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def digest_channel_list(self) -> list[str]:
+        return [c.strip() for c in self.digest_channels.split(",") if c.strip()]
 
     @property
     def telegram_ready(self) -> bool:

@@ -33,6 +33,7 @@
 ## Решения по напоминаниям (владелец, 2026-09-03)
 - Планировщик живёт внутри бэкенда (фоновая задача, раз в 60 с), отдельный сервис не нужен.
 - Telegram — отдельный новый бот для планнера (не CIS-боты). Email и календарь — Microsoft Graph, приложение в Azure AD с application-правами `Mail.Send`, `Calendars.ReadWrite`, ящик `MS_MAILBOX`.
+- Утренняя сводка: `DIGEST_TIME` (08:30), `DIGEST_CHANNELS` (telegram,email), `DIGEST_WEEKDAYS_ONLY`.
 - Переменные бэкенда: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX`, `NOTIFY_EMAIL_TO`, `FRONTEND_URL`, `APP_TIMEZONE`, `SCHEDULER_ENABLED`, `SCHEDULER_INTERVAL_SEC`.
 
 ## Дорожная карта
@@ -40,7 +41,7 @@
 1. ✅ Бэкенд MVP (CRUD всех сущностей).
 2. ✅ Фронт MVP (v0.2, 2026-09-03): направления → канбан → карточка задачи (делегирование, тулы, напоминания), справочники людей и тулов.
 3. ✅ Деплой фронта на Railway (домен `frontend-production-ed9c.up.railway.app`).
-4. 🔶 Scheduler напоминаний: код готов (внутри бэкенда; Telegram + Microsoft Graph почта/календарь), ждёт секретов в Railway.
+4. ✅ Scheduler напоминаний (внутри бэкенда): напоминания задач, «пора проверить» по поручениям, утренняя сводка. Каналы: Telegram-бот, Microsoft Graph (почта + календарь Outlook).
 5. 🔶 Health-score: v1 сделан на фронте (Карта направлений, `buildReport`). Дальше — activity_log, поручения, расчёт на бэкенде.
 6. ИИ-агенты контроля тулов (читают `source_ref`, пишут отчёты). Возможно, MCP-сервер как у Cis-Platform.
 7. Мобильное приложение (Expo) либо остаёмся на PWA.

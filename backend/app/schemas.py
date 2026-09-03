@@ -64,6 +64,7 @@ class DelegationIn(BaseModel):
 class DelegationOut(DelegationIn, ORM):
     id: int
     assigned_at: datetime
+    notified_at: datetime | None = None
     person: PersonOut
 
 

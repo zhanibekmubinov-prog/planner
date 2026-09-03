@@ -83,6 +83,7 @@ class Delegation(Base):
     check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     comment: Mapped[str | None] = mapped_column(Text)
     status: Mapped[DelegationStatus] = mapped_column(Enum(DelegationStatus), default=DelegationStatus.open)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # когда отправлено «пора проверить»
     task: Mapped[Task] = relationship(back_populates="delegations")
     person: Mapped[Person] = relationship()
 

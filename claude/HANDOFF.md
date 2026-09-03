@@ -13,7 +13,9 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork)._
 | Шаг 2 — фронт MVP (код) | ✅ v0.2 в проде работает. Оформление переделано: тема «Инженерный журнал» (бумага, Source Serif 4 заголовки, Rubik текст, Source Code Pro цифры), шрифты через `@fontsource` в сборке. Файлы записаны в `frontend/` — **ждёт коммита и пуша** |
 | Шаг 2 — фронт MVP (в проде) | ✅ работает, владелец доволен оформлением |
 | **Шаг 4 — планировщик напоминаний (код)** | ✅ написан: `backend/app/scheduler.py` (цикл раз в 60 с внутри бэкенда, lifespan в `main.py`), `notify.py` (Telegram Bot API; Microsoft Graph: sendMail + события календаря, client credentials), `routers/notify.py` (`GET /api/notify/status`, `POST /api/notify/test {channel}`, `POST /api/notify/run-now`). `requirements.txt` + httpx. Проверено TestClient'ом с подменой отправки. **Ждёт коммита и пуша** |
-| Шаг 4 — секреты в Railway | ⏳ `FRONTEND_URL`, `APP_TIMEZONE`, `SCHEDULER_ENABLED` заданы. **Нужны от владельца:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX` (+ опц. `NOTIFY_EMAIL_TO`) |
+| Напоминания по поручениям | ✅ код: `Delegation.notified_at` (миграция `b7c1d2e3f4a5`), `scheduler.process_delegations` — при наступлении `check_at` владельцу приходит «Пора проверить у X»; перенос даты сбрасывает флаг. **Ждёт коммита/пуша** (миграция применится при старте контейнера) |
+| Утренняя сводка | ✅ код: `digest.py` (порт `buildReport` с фронта) + `scheduler.send_digest`; ежедневно в `DIGEST_TIME` (по умолч. 08:30 Asia/Oral) по `DIGEST_CHANNELS` (telegram,email); отметка отправки — в `activity_log` (`Digest/sent`). Ручная проверка: `POST /api/notify/digest`. **Ждёт коммита/пуша** |
+| Шаг 4 — каналы в проде | ✅ Telegram (свой бот), email и календарь Outlook через Graph — все три проверены `/api/notify/test`, владелец подтвердил «всё работает» (2026-09-03). Секрет Graph был вставлен в чат — стоит перевыпустить. |
 
 ## Что в UI (v0.2)
 - **Карта направлений** (`Overview.tsx`, стартовый экран): карточка на каждое направление — шкала внимания («долг внимания» 0–100 → В фокусе / Норма / Ослабло / Упущено), причины («нет движения N дн.», «просрочено», «ничего не в работе», «нет ни одной задачи»), полоса состава задач, счётчики (всего/готово/в работе/ждём/бэклог/просрочено), последнее движение, топ-5 открытых задач. Сверху вердикт «Требуют внимания: …». Считается на фронте из `tasks` (updated_at, deadline, next_check_at); бэкенд не трогали. Формула — в `buildReport()`.
@@ -27,14 +29,16 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork)._
 - Мобильный: панель направлений становится верхней полосой, доска скроллится горизонтально, карточка — полноэкранная.
 
 ## Следующий шаг (по порядку)
-1. Владелец: коммит + пуш (бэкенд и фронт), дождаться зелёного деплоя backend.
-2. Telegram: создать бота в @BotFather → `TELEGRAM_BOT_TOKEN`; написать боту `/start`; узнать свой chat id (через @userinfobot) → `TELEGRAM_CHAT_ID`. Обе переменные — в Railway у backend. Проверка: `/docs` → `POST /api/notify/test` `{"channel":"telegram"}` → 200 и сообщение в Telegram.
-3. Microsoft Graph: в Azure AD (portal.azure.com → App registrations) зарегистрировать приложение «Planner», добавить **application** permissions `Mail.Send` и `Calendars.ReadWrite`, admin consent (нужен IT-админ), создать client secret. Переменные: `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX=zh.mubinov@cis.kz`. Проверка: `/api/notify/test` с `email` и `outlook_calendar`.
-4. После настройки каналов — напоминание из карточки задачи с временем «через 2 минуты» должно прийти.
-5. Дальше: напоминания по поручениям (`Delegation.check_at` → «пора проверить X у Y»; нужен флаг `notified_at` в модели → миграция), затем шаг 6 (агенты тулов).
+1. Владелец: коммит + пуш; проверить в логах Railway строку `Running upgrade a5d27fe57e15 -> b7c1d2e3f4a5`; `POST /api/notify/digest` → сводка в Telegram и почте; завтра в 08:30 должна прийти сама.
+2. При желании поменять время — переменная `DIGEST_TIME` (HH:MM), `DIGEST_WEEKDAYS_ONLY=true` — без выходных.
+3. Дальше: (в) шаг 6 — агенты тулов (Google Sheets / SharePoint через Graph `Sites.Read.All`); (г) PWA-полировка для телефона.
+2. Гигиена: перевыпустить client secret в Entra и обновить `MS_CLIENT_SECRET`.
 4. Шаг 5 — health-score: первая версия уже на Карте направлений (фронт). Дальше — учитывать `activity_log` и поручения (просроченные проверки делегатов), возможно вынести расчёт на бэкенд `/api/directions/report`.
 
 ## Как устроены напоминания (для следующей сессии)
+- Формула health-score живёт в двух местах: `frontend/src/Overview.tsx` (`buildReport`) и `backend/app/digest.py` (`build_report`). Менять — синхронно.
+- Поручения: `Delegation.notified_at IS NULL AND check_at <= now AND status=open` → сообщение владельцу (Telegram, иначе email) → `notified_at`. Лог `Delegation/check_reminder`.
+- Сводка: `digest_due()` — время ≥ `DIGEST_TIME` по `APP_TIMEZONE` и сегодня ещё не было `Digest/sent`. Ручная отправка пишется как `sent_manual` и на ежедневную не влияет.
 - `Reminder.sent_at IS NULL AND fire_at <= now` → `deliver()` по каждому каналу из `channels`; при хотя бы одном успехе ставится `sent_at`; если не удаётся >24 ч — помечается `gave_up`. Результаты — в `activity_log` (`Reminder` / `sent|failed|gave_up`, payload = {канал: ok|ошибка}).
 - `outlook_calendar`: событие 30 мин на время напоминания, id пишется в `Task.outlook_event_id`, повтор — PATCH.
 - Сообщение содержит ссылку `FRONTEND_URL/?task=ID`; фронт по этому параметру открывает карточку.

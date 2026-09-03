@@ -314,7 +314,7 @@ function RemindersSection({ store, taskId }: { store: Store; taskId: number }) {
           <div className="row" style={{ justifyContent: "flex-end" }}>
             <button className="btn primary sm" onClick={create} disabled={!fireAt || channels.length === 0}>Добавить</button>
           </div>
-          <span className="hint">Отправка напоминаний включится на шаге 4 (планировщик); пока они просто сохраняются.</span>
+          <span className="hint">Сервер проверяет напоминания раз в минуту и шлёт по выбранным каналам. Календарь Outlook — создаёт событие на это время.</span>
         </div>
       )}
       {items === null ? <span className="hint">Загрузка…</span> : items.length === 0 && !adding ? (

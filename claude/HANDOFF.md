@@ -11,7 +11,9 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork)._
 | `CORS_ORIGINS` у backend | ✅ `https://frontend-production-ed9c.up.railway.app,http://localhost:5173` |
 | Переменные frontend `VITE_API_URL`, `VITE_API_TOKEN` | ✅ заданы |
 | Шаг 2 — фронт MVP (код) | ✅ v0.2 в проде работает. Оформление переделано: тема «Инженерный журнал» (бумага, Source Serif 4 заголовки, Rubik текст, Source Code Pro цифры), шрифты через `@fontsource` в сборке. Файлы записаны в `frontend/` — **ждёт коммита и пуша** |
-| Шаг 2 — фронт MVP (в проде) | ⏳ проверить после пуша, что Railway собрал и UI открывается |
+| Шаг 2 — фронт MVP (в проде) | ✅ работает, владелец доволен оформлением |
+| **Шаг 4 — планировщик напоминаний (код)** | ✅ написан: `backend/app/scheduler.py` (цикл раз в 60 с внутри бэкенда, lifespan в `main.py`), `notify.py` (Telegram Bot API; Microsoft Graph: sendMail + события календаря, client credentials), `routers/notify.py` (`GET /api/notify/status`, `POST /api/notify/test {channel}`, `POST /api/notify/run-now`). `requirements.txt` + httpx. Проверено TestClient'ом с подменой отправки. **Ждёт коммита и пуша** |
+| Шаг 4 — секреты в Railway | ⏳ `FRONTEND_URL`, `APP_TIMEZONE`, `SCHEDULER_ENABLED` заданы. **Нужны от владельца:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX` (+ опц. `NOTIFY_EMAIL_TO`) |
 
 ## Что в UI (v0.2)
 - **Карта направлений** (`Overview.tsx`, стартовый экран): карточка на каждое направление — шкала внимания («долг внимания» 0–100 → В фокусе / Норма / Ослабло / Упущено), причины («нет движения N дн.», «просрочено», «ничего не в работе», «нет ни одной задачи»), полоса состава задач, счётчики (всего/готово/в работе/ждём/бэклог/просрочено), последнее движение, топ-5 открытых задач. Сверху вердикт «Требуют внимания: …». Считается на фронте из `tasks` (updated_at, deadline, next_check_at); бэкенд не трогали. Формула — в `buildReport()`.
@@ -25,10 +27,18 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork)._
 - Мобильный: панель направлений становится верхней полосой, доска скроллится горизонтально, карточка — полноэкранная.
 
 ## Следующий шаг (по порядку)
-1. Владелец: `cd frontend; npm run build` → `git add . / commit / push` → дождаться зелёного деплоя → открыть фронт, создать направление и пару задач через UI.
-2. Если что-то не так на проде — прислать скриншот/ошибку.
-3. **Шаг 4 — scheduler напоминаний**: отдельный процесс/сервис на Railway (или APScheduler в бэкенде), читает `reminders` с `sent_at IS NULL AND fire_at <= now()`, шлёт в Telegram (bot token + chat id владельца) и email; `outlook_calendar` — через Microsoft Graph (создание события, `Task.outlook_event_id`). Нужны решения владельца: бот (новый или существующий CIS-бот?), почтовый провайдер, доступ к Graph.
+1. Владелец: коммит + пуш (бэкенд и фронт), дождаться зелёного деплоя backend.
+2. Telegram: создать бота в @BotFather → `TELEGRAM_BOT_TOKEN`; написать боту `/start`; узнать свой chat id (через @userinfobot) → `TELEGRAM_CHAT_ID`. Обе переменные — в Railway у backend. Проверка: `/docs` → `POST /api/notify/test` `{"channel":"telegram"}` → 200 и сообщение в Telegram.
+3. Microsoft Graph: в Azure AD (portal.azure.com → App registrations) зарегистрировать приложение «Planner», добавить **application** permissions `Mail.Send` и `Calendars.ReadWrite`, admin consent (нужен IT-админ), создать client secret. Переменные: `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX=zh.mubinov@cis.kz`. Проверка: `/api/notify/test` с `email` и `outlook_calendar`.
+4. После настройки каналов — напоминание из карточки задачи с временем «через 2 минуты» должно прийти.
+5. Дальше: напоминания по поручениям (`Delegation.check_at` → «пора проверить X у Y»; нужен флаг `notified_at` в модели → миграция), затем шаг 6 (агенты тулов).
 4. Шаг 5 — health-score: первая версия уже на Карте направлений (фронт). Дальше — учитывать `activity_log` и поручения (просроченные проверки делегатов), возможно вынести расчёт на бэкенд `/api/directions/report`.
+
+## Как устроены напоминания (для следующей сессии)
+- `Reminder.sent_at IS NULL AND fire_at <= now` → `deliver()` по каждому каналу из `channels`; при хотя бы одном успехе ставится `sent_at`; если не удаётся >24 ч — помечается `gave_up`. Результаты — в `activity_log` (`Reminder` / `sent|failed|gave_up`, payload = {канал: ok|ошибка}).
+- `outlook_calendar`: событие 30 мин на время напоминания, id пишется в `Task.outlook_event_id`, повтор — PATCH.
+- Сообщение содержит ссылку `FRONTEND_URL/?task=ID`; фронт по этому параметру открывает карточку.
+- Токен Graph кэшируется в памяти процесса.
 
 ## Известные шероховатости
 - Создание задачи — через `window.prompt` (быстро, но некрасиво); можно заменить на inline-поле в колонке.

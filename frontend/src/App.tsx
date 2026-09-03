@@ -34,6 +34,16 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Ссылка из напоминания: /?task=ID — открыть доску с этой задачей
+  useEffect(() => {
+    if (store.loading) return;
+    const id = Number(new URLSearchParams(window.location.search).get("task"));
+    if (id && store.tasks.some((t) => t.id === id)) {
+      setView({ kind: "board", directionId: null }); setSelectedId(id);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, [store.loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const showPanel = view.kind === "board" && selected !== null;
 
   return (

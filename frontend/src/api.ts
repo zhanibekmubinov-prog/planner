@@ -1,5 +1,6 @@
 // Слой доступа к API. Все запросы идут через api<T>(); токен и адрес — из переменных сборки.
-const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+// VITE_API_URL может быть задан и как "https://host", и как "https://host/api" — приводим к виду без /api.
+const BASE = ((import.meta.env.VITE_API_URL as string | undefined) ?? "").replace(/\/+$/, "").replace(/\/api$/, "");
 const TOKEN = (import.meta.env.VITE_API_TOKEN as string | undefined) ?? "";
 
 export class ApiError extends Error {

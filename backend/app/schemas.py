@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict
-from .models import Channel, DelegationStatus, DirectionStatus, TaskStatus, ToolType
+from .models import Channel, DelegationStatus, DirectionStatus, Recipient, TaskStatus, ToolType
 
 
 class ORM(BaseModel):
@@ -118,6 +118,7 @@ class ReminderIn(BaseModel):
     fire_at: datetime
     channels: list[Channel] = [Channel.telegram]
     message: str | None = None
+    recipient: Recipient = Recipient.owner
 
 class ReminderOut(ReminderIn, ORM):
     id: int

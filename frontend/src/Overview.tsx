@@ -54,9 +54,9 @@ export function buildReport(direction: Direction, all: Task[], now = Date.now())
   };
 }
 
-type Props = { store: Store; onOpenDirection: (id: number) => void; onOpenTask: (directionId: number, taskId: number) => void; onNewDirection: () => void };
+type Props = { store: Store; onOpenDirection: (id: number) => void; onOpenTask: (directionId: number, taskId: number) => void; onNewDirection: () => void; onDirectionMenu: (d: Direction, e: React.MouseEvent) => void };
 
-export default function Overview({ store, onOpenDirection, onOpenTask, onNewDirection }: Props) {
+export default function Overview({ store, onOpenDirection, onOpenTask, onNewDirection, onDirectionMenu }: Props) {
   const reports = useMemo(() => {
     const now = Date.now();
     return store.directions
@@ -100,13 +100,13 @@ export default function Overview({ store, onOpenDirection, onOpenTask, onNewDire
       </header>
 
       <div className="ov-grid">
-        {reports.map((r) => <DirectionCard key={r.direction.id} r={r} onOpen={() => onOpenDirection(r.direction.id)} onTask={(id) => onOpenTask(r.direction.id, id)} />)}
+        {reports.map((r) => <DirectionCard key={r.direction.id} r={r} onOpen={() => onOpenDirection(r.direction.id)} onTask={(id) => onOpenTask(r.direction.id, id)} onMenu={(e) => onDirectionMenu(r.direction, e)} />)}
       </div>
     </div>
   );
 }
 
-function DirectionCard({ r, onOpen, onTask }: { r: DirectionReport; onOpen: () => void; onTask: (id: number) => void }) {
+function DirectionCard({ r, onOpen, onTask, onMenu }: { r: DirectionReport; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void }) {
   const color = dirColor(r.direction);
   const total = r.tasks.length;
   const pct = (n: number) => (total ? (n / total) * 100 : 0);
@@ -114,13 +114,14 @@ function DirectionCard({ r, onOpen, onTask }: { r: DirectionReport; onOpen: () =
   const topTasks = [...r.open].sort((a, b) => a.priority - b.priority || (a.deadline || "9").localeCompare(b.deadline || "9")).slice(0, 5);
 
   return (
-    <article className={`ov-card ${paused ? "paused" : ""} state-${r.level.key}`} style={{ ["--dir" as string]: color }}>
+    <article className={`ov-card ${paused ? "paused" : ""} state-${r.level.key}`} style={{ ["--dir" as string]: color }} onContextMenu={onMenu}>
       <header className="ov-card-head">
         <button className="ov-name" onClick={onOpen}>
           <span className="swatch" style={{ background: color }} />
           <span>{r.direction.name}</span>
         </button>
         <span className={`lvl lvl-${r.level.key}`} title={r.level.hint}>{paused ? "На паузе" : r.level.label}</span>
+        <button className="more" onClick={onMenu} title="Действия с направлением" aria-label={`Действия: ${r.direction.name}`}>⋯</button>
       </header>
       {r.direction.goal && <p className="ov-goal">{r.direction.goal}</p>}
 

@@ -80,7 +80,8 @@ export type Delegation = {
 export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at" | "report" | "person">;
 export type PersonSummary = { person: Person; total: number; open: number; done: number; overdue: number; check_due: number; tasks: Task[]; delegations: Delegation[] };
 
-export type Reminder = { id: number; task_id: number; fire_at: string; channels: Channel[]; message?: string | null; sent_at?: string | null };
+export type Recipient = "owner" | "assignees" | "both";
+export type Reminder = { id: number; task_id: number; fire_at: string; channels: Channel[]; message?: string | null; recipient?: Recipient; sent_at?: string | null };
 export type ReminderIn = Omit<Reminder, "id" | "sent_at">;
 
 export type MindNode = { id: string; text: string; children: MindNode[]; collapsed?: boolean };
@@ -101,6 +102,7 @@ export const TOOL_TYPE_LABEL: Record<ToolType, string> = {
   google_sheet: "Google Sheet", excel_sharepoint: "Excel · SharePoint", telegram_bot: "Telegram-бот", notion: "Notion", other: "Другое",
 };
 export const CHANNEL_LABEL: Record<Channel, string> = { telegram: "Telegram", email: "Email", outlook_calendar: "Календарь Outlook" };
+export const RECIPIENT_LABEL: Record<Recipient, string> = { owner: "Мне", assignees: "Исполнителю", both: "Мне и исполнителю" };
 export const DIRECTION_STATUS_LABEL: Record<DirectionStatus, string> = { active: "Активно", paused: "На паузе", archived: "В архиве" };
 
 // Палитра направлений — используется, если у направления не задан свой цвет.

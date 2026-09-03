@@ -21,6 +21,10 @@ class ToolType(str, enum.Enum):
 class Channel(str, enum.Enum):
     telegram = "telegram"; email = "email"; outlook_calendar = "outlook_calendar"
 
+class Recipient(str, enum.Enum):
+    """Кому уходит напоминание: владельцу задачи, исполнителям (открытые поручения) или обоим."""
+    owner = "owner"; assignees = "assignees"; both = "both"
+
 
 # --- many-to-many link tables (задачи и тулы кросс-направленческие) ---
 task_directions = Table("task_directions", Base.metadata,
@@ -130,6 +134,7 @@ class Reminder(Base):
     fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     channels: Mapped[list] = mapped_column(JSON, default=list)  # ["telegram","email","outlook_calendar"]
     message: Mapped[str | None] = mapped_column(Text)
+    recipient: Mapped[str] = mapped_column(String(16), default="owner", server_default="owner")  # owner | assignees | both
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     task: Mapped[Task] = relationship(back_populates="reminders")
 

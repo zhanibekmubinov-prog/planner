@@ -5,6 +5,7 @@ import { onUnauthorized } from "./api";
 import { Direction } from "./api";
 import Board from "./Board";
 import DirectionModal from "./DirectionModal";
+import DirectionMenu, { anchorFromEvent, MenuAnchor, RenameModal } from "./DirectionMenu";
 import { PeoplePage, ToolsPage } from "./Registry";
 import MindMapEditor from "./MindMapEditor";
 import MindMapsPage from "./MindMaps";
@@ -27,6 +28,9 @@ function Workspace() {
   const [view, setView] = useState<View>({ kind: "overview" });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [dirModal, setDirModal] = useState<{ open: boolean; direction: Direction | null }>({ open: false, direction: null });
+  const [menu, setMenu] = useState<MenuAnchor | null>(null);          // контекстное меню направления
+  const [renaming, setRenaming] = useState<Direction | null>(null);
+  const openMenu = (d: Direction, e: React.MouseEvent) => setMenu(anchorFromEvent(d, e));
 
   const direction = useMemo(
     () => (view.kind === "board" && view.directionId ? store.directions.find((d) => d.id === view.directionId) ?? null : null),
@@ -69,7 +73,7 @@ function Workspace() {
         directions={store.directions} tasks={store.tasks} view={view} mindmapCount={store.mindmaps.length}
         inboxCount={store.inbox.filter((t) => t.status !== "done").length} me={store.me} onProfile={() => setProfile(true)}
         onView={(v) => { setView(v); if (v.kind !== "board") setSelectedId(null); }}
-        onNewDirection={() => setDirModal({ open: true, direction: null })}
+        onNewDirection={() => setDirModal({ open: true, direction: null })} onDirectionMenu={openMenu}
       />
 
       <main className="main">
@@ -87,7 +91,7 @@ function Workspace() {
             store={store}
             onOpenDirection={(id) => setView({ kind: "board", directionId: id })}
             onOpenTask={(dirId, taskId) => { setView({ kind: "board", directionId: dirId }); setSelectedId(taskId); }}
-            onNewDirection={() => setDirModal({ open: true, direction: null })}
+            onNewDirection={() => setDirModal({ open: true, direction: null })} onDirectionMenu={openMenu}
           />
         ) : view.kind === "mindmaps" ? (
           <MindMapsPage store={store} filterDirection={view.directionId ?? null} onOpen={(id) => setView({ kind: "mindmap", id })} onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
@@ -125,6 +129,16 @@ function Workspace() {
       )}
 
       {profile && store.me && <ProfileModal store={store} onClose={() => setProfile(false)} />}
+
+      {menu && (
+        <DirectionMenu store={store} anchor={menu} onClose={() => setMenu(null)}
+          onOpen={(d) => { setView({ kind: "board", directionId: d.id }); setSelectedId(null); }}
+          onMindmaps={(d) => { setView({ kind: "mindmaps", directionId: d.id }); setSelectedId(null); }}
+          onEdit={(d) => setDirModal({ open: true, direction: d })}
+          onRename={(d) => setRenaming(d)}
+          onDeleted={(d) => { if (view.kind === "board" && view.directionId === d.id) setView({ kind: "board", directionId: null }); }} />
+      )}
+      {renaming && <RenameModal store={store} direction={renaming} onClose={() => setRenaming(null)} />}
 
       {dirModal.open && (
         <DirectionModal

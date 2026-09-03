@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   api, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, fromDateTimeInput, isOverdue, Person, post, put,
-  Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
+  Recipient, RECIPIENT_LABEL, Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
 } from "./api";
 import { useConfirm } from "./confirm";
 import { createMindMap, MindButton } from "./MindMaps";
@@ -318,15 +318,22 @@ function RemindersSection({ store, taskId }: { store: Store; taskId: number }) {
   const [fireAt, setFireAt] = useState("");
   const [channels, setChannels] = useState<Channel[]>(["telegram"]);
   const [message, setMessage] = useState("");
+  const [recipient, setRecipient] = useState<Recipient>("owner");
+  const [assignees, setAssignees] = useState<string[]>([]); // имена исполнителей по открытым поручениям — для подсказки
 
-  const load = async () => { try { setItems(await api<Reminder[]>(`/tasks/${taskId}/reminders`)); } catch (e) { store.setError(String(e)); } };
+  const load = async () => {
+    try {
+      const [rs, ds] = await Promise.all([api<Reminder[]>(`/tasks/${taskId}/reminders`), api<Delegation[]>(`/tasks/${taskId}/delegations`)]);
+      setItems(rs); setAssignees(ds.filter((d) => d.status === "open").map((d) => d.person.name));
+    } catch (e) { store.setError(String(e)); }
+  };
   useEffect(() => { setItems(null); void load(); }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function create() {
     const iso = fromDateTimeInput(fireAt);
     if (!iso || channels.length === 0) return;
     try {
-      await post<Reminder>("/reminders", { task_id: taskId, fire_at: iso, channels, message: message.trim() || null } satisfies ReminderIn);
+      await post<Reminder>("/reminders", { task_id: taskId, fire_at: iso, channels, message: message.trim() || null, recipient } satisfies ReminderIn);
       setAdding(false); setFireAt(""); setMessage("");
       await load();
     } catch (e) { store.setError(String(e)); }
@@ -352,6 +359,17 @@ function RemindersSection({ store, taskId }: { store: Store; taskId: number }) {
               <label key={c}><input type="checkbox" checked={channels.includes(c)} onChange={() => toggle(c)} /> {CHANNEL_LABEL[c]}</label>
             ))}
           </div>
+          <div className="field">
+            <label>Кому</label>
+            <div className="seg" role="radiogroup" aria-label="Кому напомнить">
+              {(Object.keys(RECIPIENT_LABEL) as Recipient[]).map((r) => (
+                <button key={r} role="radio" aria-checked={recipient === r} className={recipient === r ? "on" : ""} onClick={() => setRecipient(r)}>{RECIPIENT_LABEL[r]}</button>
+              ))}
+            </div>
+            {recipient !== "owner" && (
+              <span className="hint">{assignees.length ? `Исполнители сейчас: ${assignees.join(", ")}. Получат те, у кого открыто поручение в момент отправки — в Telegram (если указан chat id) или на почту.` : "У задачи пока нет открытых поручений — сначала поручите её кому-нибудь, иначе исполнителю отправлять будет некому."}</span>
+            )}
+          </div>
           <div className="row" style={{ justifyContent: "flex-end" }}>
             <button className="btn primary sm" onClick={create} disabled={!fireAt || channels.length === 0}>Добавить</button>
           </div>
@@ -366,7 +384,7 @@ function RemindersSection({ store, taskId }: { store: Store; taskId: number }) {
             <div key={r.id} className={`item ${r.sent_at ? "muted" : ""}`}>
               <span className="primary mono">{showDateTime(r.fire_at)}</span>
               <span className="actions"><button className="btn danger sm" onClick={() => remove(r)} aria-label="Удалить">×</button></span>
-              <span className="secondary">{r.channels.map((c) => CHANNEL_LABEL[c]).join(", ")}{r.message ? ` · ${r.message}` : ""}{r.sent_at ? " · отправлено" : ""}</span>
+              <span className="secondary">{r.channels.map((c) => CHANNEL_LABEL[c]).join(", ")}{r.recipient && r.recipient !== "owner" ? ` · ${RECIPIENT_LABEL[r.recipient].toLowerCase()}` : ""}{r.message ? ` · ${r.message}` : ""}{r.sent_at ? " · отправлено" : ""}</span>
             </div>
           ))}
         </div>

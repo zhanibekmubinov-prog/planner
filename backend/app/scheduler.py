@@ -58,28 +58,68 @@ def chat_id_for(user: models.User | None) -> str | None:
     return None
 
 
+def _person_chat(p: models.Person) -> str | None:
+    return (p.user.telegram_chat_id if p.user and p.user.telegram_chat_id else None) or p.telegram_chat_id
+
+def _person_email(p: models.Person) -> str | None:
+    return (p.user.email if p.user else None) or p.email
+
+
 async def deliver(reminder: models.Reminder) -> dict[str, str]:
-    """Отправляет по всем каналам напоминания владельцу задачи. Возвращает {канал: 'ok' | текст ошибки}."""
+    """Отправляет напоминание по всем каналам адресатам (recipient: owner | assignees | both).
+    Возвращает {канал[/адресат]: 'ok' | текст ошибки}."""
     subject, tg, mail = render(reminder)
     owner = reminder.task.owner
+    recipient = reminder.recipient or "owner"
     results: dict[str, str] = {}
-    for ch in reminder.channels or []:
-        try:
-            if ch == "telegram":
-                chat = chat_id_for(owner)
-                if not chat: raise NotifyError("у владельца задачи не указан Telegram chat id (Профиль)")
-                await send_telegram(tg, chat)
-            elif ch == "email":
-                await send_email(subject, mail, owner.email if owner else None)
-            elif ch == "outlook_calendar":
-                start = _utc(reminder.fire_at).astimezone(TZ)
-                ev = await upsert_calendar_event(reminder.task.outlook_event_id, subject, mail, start, mailbox=(owner.email if owner else None))
-                reminder.task.outlook_event_id = ev
-            else:
-                raise NotifyError(f"неизвестный канал {ch}")
-            results[ch] = "ok"
-        except Exception as ex:  # noqa: BLE001 — один упавший канал не должен ронять остальные
-            results[ch] = str(ex)[:300]
+    channels = reminder.channels or []
+
+    if recipient in ("owner", "both"):
+        for ch in channels:
+            try:
+                if ch == "telegram":
+                    chat = chat_id_for(owner)
+                    if not chat: raise NotifyError("у владельца задачи не указан Telegram chat id (Профиль)")
+                    await send_telegram(tg, chat)
+                elif ch == "email":
+                    await send_email(subject, mail, owner.email if owner else None)
+                elif ch == "outlook_calendar":
+                    start = _utc(reminder.fire_at).astimezone(TZ)
+                    ev = await upsert_calendar_event(reminder.task.outlook_event_id, subject, mail, start, mailbox=(owner.email if owner else None))
+                    reminder.task.outlook_event_id = ev
+                else:
+                    raise NotifyError(f"неизвестный канал {ch}")
+                results[ch] = "ok"
+            except Exception as ex:  # noqa: BLE001 — один упавший канал не должен ронять остальные
+                results[ch] = str(ex)[:300]
+
+    if recipient in ("assignees", "both"):
+        people = [d.person for d in reminder.task.delegations if d.status == models.DelegationStatus.open]
+        # исполнитель-владелец уведомление уже получил как владелец
+        people = [p for p in people if not (owner and p.user_id == owner.id and recipient == "both")]
+        if not people:
+            results["assignees"] = "у задачи нет открытых поручений"
+        for p in people:
+            for ch in channels:
+                key = f"{ch}/{p.name}"
+                try:
+                    if ch == "telegram":
+                        chat = _person_chat(p)
+                        if not chat: raise NotifyError("нет Telegram chat id")
+                        await send_telegram(tg, chat)
+                    elif ch == "email":
+                        to = _person_email(p)
+                        if not to: raise NotifyError("нет почты")
+                        await send_email(subject, mail, to)
+                    elif ch == "outlook_calendar":
+                        to = _person_email(p)
+                        if not to: raise NotifyError("нет почты для календаря")
+                        await upsert_calendar_event(None, subject, mail, _utc(reminder.fire_at).astimezone(TZ), mailbox=to)
+                    else:
+                        raise NotifyError(f"неизвестный канал {ch}")
+                    results[key] = "ok"
+                except Exception as ex:  # noqa: BLE001
+                    results[key] = str(ex)[:300]
     return results
 
 

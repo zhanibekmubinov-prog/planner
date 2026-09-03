@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
         await task
 
 
-app = FastAPI(title="Planner API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="CIS Planner API", version="0.3.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_list, allow_methods=["*"], allow_headers=["*"])
 
 

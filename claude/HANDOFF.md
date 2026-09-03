@@ -7,8 +7,8 @@ _Обновлено: 2026-09-03, сессия 2 (Cowork). Версия v0.3 — 
 |---|---|
 | Railway `postgres` | ✅ |
 | Railway `backend` | ✅ https://backend-production-830f1.up.railway.app — `/health` ok, `/docs` с кнопкой Authorize (после пуша auth.py) |
-| Railway `frontend` | ✅ https://frontend-production-ed9c.up.railway.app — деплой зелёный |
-| `CORS_ORIGINS` у backend | ✅ `https://frontend-production-ed9c.up.railway.app,http://localhost:5173` |
+| Railway `frontend` | ✅ https://cis-planner.up.railway.app — деплой зелёный |
+| `CORS_ORIGINS` у backend | ✅ `https://cis-planner.up.railway.app,http://localhost:5173` |
 | Переменные frontend `VITE_API_URL`, `VITE_API_TOKEN` | ✅ заданы |
 | Шаг 2 — фронт MVP (код) | ✅ v0.2 в проде работает. Оформление переделано: тема «Инженерный журнал» (бумага, Source Serif 4 заголовки, Rubik текст, Source Code Pro цифры), шрифты через `@fontsource` в сборке. Файлы записаны в `frontend/` — **ждёт коммита и пуша** |
 | Шаг 2 — фронт MVP (в проде) | ✅ работает, владелец доволен оформлением |

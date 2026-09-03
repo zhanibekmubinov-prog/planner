@@ -102,7 +102,7 @@ def render(data: dict) -> tuple[str, str, str]:
     title = f"Сводка на {d.strftime('%d.%m.%Y')}"
     neglected = data["neglected"]
     if not data["reports"] and not data.get("inbox"):
-        return f"Planner · {title}", f"☀️ <b>{title}</b>\nНаправлений и поручений пока нет — начните с направления в планнере.", f"<p>{title}: направлений и поручений пока нет.</p>"
+        return f"CIS Planner · {title}", f"☀️ <b>{title}</b>\nНаправлений и поручений пока нет — начните с направления в планнере.", f"<p>{title}: направлений и поручений пока нет.</p>"
 
     tg: list[str] = [f"☀️ <b>{title}</b>"]
     if neglected:
@@ -147,4 +147,4 @@ def render(data: dict) -> tuple[str, str, str]:
     # HTML для почты — тот же текст, аккуратнее оформлен
     body = tg_text.replace("\n", "<br>")
     mail = f"<div style='font-family:Georgia,serif;font-size:15px;line-height:1.5'>{body}</div>"
-    return f"Planner · {title}", tg_text, mail
+    return f"CIS Planner · {title}", tg_text, mail

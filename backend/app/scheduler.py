@@ -45,7 +45,7 @@ def render(reminder: models.Reminder) -> tuple[str, str, str]:
     if open_deleg: lines.append("Поручено: " + ", ".join(e(d.person.name) for d in open_deleg))
     if t.tools: lines.append("Тулы: " + ", ".join(e(x.name) for x in t.tools))
     link = _task_link(t)
-    subject = f"Planner · {t.title}"
+    subject = f"CIS Planner · {t.title}"
     tg = f"⏰ <b>{e(t.title)}</b>\n" + "\n".join(lines) + (f"\n<a href=\"{link}\">Открыть в планнере</a>" if link else "")
     mail = f"<h3 style='margin:0 0 8px'>{e(t.title)}</h3><p>" + "<br>".join(lines) + "</p>" + (f"<p><a href='{link}'>Открыть в планнере</a></p>" if link else "")
     return subject, tg, mail
@@ -124,7 +124,7 @@ def render_delegation(d: models.Delegation) -> tuple[str, str, str]:
     lines = [f"Поручено {_fmt(d.assigned_at)}" + (f", проверить {_fmt(d.check_at)}" if d.check_at else "")]
     if d.comment: lines.append(f"Что ждём: {e(d.comment)}")
     if t.deadline: lines.append(f"Дедлайн задачи: {t.deadline.strftime('%d.%m.%Y')}")
-    subject = f"Planner · проверить у {d.person.name}: {t.title}"
+    subject = f"CIS Planner · проверить у {d.person.name}: {t.title}"
     tg = f"👤 <b>Пора проверить у {e(d.person.name)}</b>\n{e(t.title)}\n" + "\n".join(lines) + (f"\n<a href=\"{link}\">Открыть в планнере</a>" if link else "")
     mail = f"<h3 style='margin:0 0 8px'>Пора проверить у {e(d.person.name)}: {e(t.title)}</h3><p>" + "<br>".join(lines) + "</p>" + (f"<p><a href='{link}'>Открыть в планнере</a></p>" if link else "")
     return subject, tg, mail
@@ -171,7 +171,7 @@ def render_assignment(d: models.Delegation) -> tuple[str, str, str]:
     if d.comment: lines.append(f"Что ждут: {e(d.comment)}")
     if t.deadline: lines.append(f"Дедлайн: {t.deadline.strftime('%d.%m.%Y')}")
     if d.check_at: lines.append(f"Проверка: {_fmt(d.check_at)}")
-    subject = f"Planner · вам поручено: {t.title}"
+    subject = f"CIS Planner · вам поручено: {t.title}"
     tg = f"📥 <b>Вам поручено</b>\n{e(t.title)}\n" + "\n".join(lines) + (f"\n<a href=\"{link}\">Открыть в планнере</a>" if link else "")
     mail = f"<h3 style='margin:0 0 8px'>Вам поручено: {e(t.title)}</h3><p>" + "<br>".join(lines) + "</p>" + (f"<p><a href='{link}'>Открыть в планнере</a></p>" if link else "")
     return subject, tg, mail

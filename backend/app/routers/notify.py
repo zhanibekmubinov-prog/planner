@@ -38,11 +38,11 @@ async def test(data: TestIn, user: models.User = Depends(current_user)):
         if data.channel == "telegram":
             chat = chat_id_for(user)
             if not chat: raise NotifyError("У вас не указан Telegram chat id — заполните в Профиле")
-            await send_telegram("✅ Planner: тестовое сообщение. Канал Telegram работает.", chat)
+            await send_telegram("✅ CIS Planner: тестовое сообщение. Канал Telegram работает.", chat)
         elif data.channel == "email":
-            await send_email("Planner: тест", "<p>Канал email работает.</p>", user.email)
+            await send_email("CIS Planner: тест", "<p>Канал email работает.</p>", user.email)
         elif data.channel == "outlook_calendar":
-            ev = await upsert_calendar_event(None, "Planner: тестовое событие", "<p>Календарь подключён.</p>", datetime.now(timezone.utc).astimezone(), mailbox=user.email)
+            ev = await upsert_calendar_event(None, "CIS Planner: тестовое событие", "<p>Календарь подключён.</p>", datetime.now(timezone.utc).astimezone(), mailbox=user.email)
             return {"ok": True, "event_id": ev}
         else:
             raise HTTPException(400, "channel must be telegram | email | outlook_calendar")

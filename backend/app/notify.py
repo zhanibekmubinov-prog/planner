@@ -68,7 +68,7 @@ async def upsert_calendar_event(event_id: str | None, subject: str, html: str, s
         "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": settings.app_timezone},
         "end": {"dateTime": (start + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": settings.app_timezone},
         "isReminderOn": True, "reminderMinutesBeforeStart": 15,
-        "categories": ["Planner"],
+        "categories": ["CIS Planner"],
     }
     base = f"/users/{mailbox or settings.ms_mailbox}/events"
     if event_id:

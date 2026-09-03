@@ -25,7 +25,7 @@ export default function Sidebar({ directions, tasks, view, mindmapCount, inboxCo
 
   return (
     <aside className="side">
-      <div className="brand"><h1>Planner</h1><span className="ver">v0.3</span></div>
+      <div className="brand"><h1>CIS Planner</h1><span className="ver">v0.3</span></div>
       {me && <UserChip me={me} onClick={onProfile} />}
 
       <div className="side-section">

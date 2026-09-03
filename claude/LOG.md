@@ -6,8 +6,8 @@
 
 ## 2026-09-03 · сессия 2 · Cowork (desktop)
 **Сделано**
-- Проверено: `backend` и `frontend` на Railway — SUCCESS. Домен фронта: `https://frontend-production-ed9c.up.railway.app`.
-- `CORS_ORIGINS` у backend заменён с `*` на `https://frontend-production-ed9c.up.railway.app,http://localhost:5173` (через Railway MCP, бэкенд переразвёрнут).
+- Проверено: `backend` и `frontend` на Railway — SUCCESS. Домен фронта: `https://cis-planner.up.railway.app`.
+- `CORS_ORIGINS` у backend заменён с `*` на `https://cis-planner.up.railway.app,http://localhost:5173` (через Railway MCP, бэкенд переразвёрнут).
 - `backend/app/auth.py`: `X-API-Token` стал security-схемой `APIKeyHeader` → в `/docs` кнопка **Authorize**. Проверено TestClient'ом: без токена 401, с токеном 200.
 - **Шаг 2 — фронт MVP написан** (референс Huly, ноутбук-first): `index.html` (шрифты IBM Plex Sans/Mono), `src/api.ts`, `store.ts`, `Sidebar.tsx`, `Board.tsx`, `TaskPanel.tsx`, `DirectionModal.tsx`, `Registry.tsx`, `App.tsx`, `styles.css`. Сборка `npm run build` проходит; проверено на sqlite-бэкенде со скриншотами (десктоп 1440, мобильный 390), автосохранение карточки работает.
 - Файлы записаны в `frontend/` на компьютере владельца. Владелец коммитит сам (git из среды Claude в этой папке не запускать — оставляет `index.lock`).
@@ -29,7 +29,10 @@
 
 - **v0.3 — многопользовательский режим**: таблица `users`, владельцы у сущностей, вход через Microsoft (OIDC code flow, свой JWT), видимость «своё + порученное», раздел «Мне поручено» с отчётом исполнителя, сводка по человеку, профиль с Telegram chat id, уведомления по адресатам. Миграция `d9e3f4a5b6c7` передаёт данные владельцу. В Railway: `OWNER_EMAIL`, `SESSION_SECRET`, `MS_REDIRECT_URI`, `ALLOWED_EMAIL_DOMAINS`; `VITE_API_TOKEN` у фронта очищен. Проверено TestClient'ом и в браузере с двумя пользователями.
 
+- Переименование в **CIS Planner** (вкладка, PWA, панель, экран входа, темы писем/сообщений). Домен фронта сменён на `cis-planner.up.railway.app`; `CORS_ORIGINS` и `FRONTEND_URL` обновлены в Railway. Исправлен адрес Microsoft `oauth2/v2.0`.
+
 **Решения владельца**
+- Название продукта — CIS Planner; адрес фронта — cis-planner.up.railway.app.
 - Многопользовательский режим: вход через Microsoft; каждый видит своё + порученное ему; поручённая задача появляется у исполнителя.
 - Майндмапы: референс MindNode, авто-раскладка; отдельный раздел + внутри направлений и у задач, своя форма/цвет кнопки.
 - Системные диалоги браузера не использовать нигде.

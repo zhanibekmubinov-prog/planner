@@ -64,6 +64,9 @@ a { color: var(--accent); }
 .side-item .swatch { width: 10px; height: 10px; border-radius: 3px; }
 .side-item .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .side-item .count { font-family: var(--mono); font-size: 11px; color: var(--side-muted); }
+.side-item .meter { grid-column: 2 / -1; height: 2px; background: rgba(255,255,255,0.08); border-radius: 1px; overflow: hidden; margin-top: -4px; }
+.side-item .meter span { display: block; height: 100%; opacity: 0.8; }
+.card .code { color: var(--text-3); font-size: 11px; }
 .side-item.paused .name { color: var(--side-muted); }
 .side-nav { margin-top: auto; padding: 8px; border-top: 1px solid #2a2e37; display: flex; flex-direction: column; gap: 1px; }
 .side-nav .side-item { grid-template-columns: 1fr auto; }
@@ -188,7 +191,7 @@ a { color: var(--accent); }
 .modal h3 { margin: 0; font-size: 16px; }
 .modal .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
-.swatches button { width: 24px; height: 24px; border-radius: 6px; border: 2px solid transparent; }
+.swatches button { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; padding: 0; }
 .swatches button.on { border-color: var(--text); }
 
 /* ---- Мобильная раскладка ---- */
@@ -201,6 +204,7 @@ a { color: var(--accent); }
   .side-list, .side-nav { flex-direction: row; padding: 6px 0; border: 0; margin: 0; overflow: visible; flex: 0 0 auto; }
   .side-nav { border-left: 1px solid #2a2e37; padding-left: 6px; margin-left: 4px; }
   .side-item { grid-template-columns: 10px auto auto; padding: 6px 10px; white-space: nowrap; flex: 0 0 auto; width: auto; }
+  .side-item .meter { display: none; }
   .side-item .name { overflow: visible; }
   .panel { position: fixed; inset: 0; z-index: 10; border: 0; }
   .board { grid-auto-columns: minmax(260px, 80vw); padding: 12px; }
@@ -212,3 +216,54 @@ a { color: var(--accent); }
 @media (prefers-reduced-motion: no-preference) {
   .card { transition: box-shadow 0.12s ease; }
 }
+
+
+/* =====================================================================
+   Оформление «Инженерный журнал» (выбор владельца, 2026-09-03): тёплая бумага, серифные заголовки
+   направлений, ржаво-красный акцент, вкладки-разделители. Source Serif 4 (заголовки) + Rubik (текст) + Source Code Pro (даты, номера).
+   ===================================================================== */
+[data-theme="journal"] {
+  --bg: #f3efe6; --surface: #fffdf8; --surface-2: #ebe6da; --line: #dcd5c5; --line-strong: #bfb6a2;
+  --text: #211d17; --text-2: #6a635a; --text-3: #9a927f;
+  --accent: #9a3b1c; --accent-soft: #f3ddd2;
+  --danger: #a12727; --danger-soft: #f7e0dd; --warn: #8a5a00; --warn-soft: #f4e7c7; --ok: #3d7a4c;
+  --side-bg: #e9e3d5; --side-text: #2b261f; --side-muted: #8a8272; --side-hover: #e0d9c8; --side-active: #fffdf8;
+  --radius: 3px; --radius-lg: 4px;
+  --font: "Rubik", system-ui, sans-serif; --mono: "Source Code Pro", ui-monospace, monospace;
+  --display: "Source Serif 4", Georgia, serif;
+  --shadow: 0 0 0 1px var(--line); --shadow-lift: 0 0 0 1px var(--line-strong), 0 4px 14px rgba(60, 45, 20, 0.12);
+}
+[data-theme="journal"] { font-size: 14px; }
+[data-theme="journal"] .side { border-right: 1px solid var(--line-strong); }
+[data-theme="journal"] .brand h1 { font-family: var(--display); font-size: 20px; font-weight: 700; color: var(--text); font-style: italic; }
+[data-theme="journal-sans"] .brand h1, [data-theme="journal-sans"] .topbar .goal { font-style: normal; }
+[data-theme="journal"] .side-section { color: var(--side-muted); }
+[data-theme="journal"] .side-section button:hover { background: var(--side-hover); color: var(--text); }
+[data-theme="journal"] .side-list { padding-right: 0; }
+[data-theme="journal"] .side-item { font-family: var(--display); font-size: 16px; border-radius: var(--radius) 0 0 var(--radius); }
+[data-theme="journal"] .side-item.active { color: var(--text); box-shadow: 0 0 0 1px var(--line-strong); margin-right: -1px; position: relative; z-index: 1; border-right: 1px solid var(--side-active); }
+[data-theme="journal"] .side-item .swatch { border-radius: 50%; }
+[data-theme="journal"] .side-item .meter { background: rgba(0,0,0,0.08); }
+[data-theme="journal"] .side-nav { border-top-color: var(--line-strong); }
+[data-theme="journal"] .side-nav .side-item { font-family: var(--font); font-size: 14px; }
+[data-theme="journal"] .topbar h2 { font-family: var(--display); font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+[data-theme="journal"] .topbar h2 .swatch { border-radius: 50%; }
+[data-theme="journal"] .topbar .goal { font-style: italic; font-family: var(--display); font-size: 15px; }
+[data-theme="journal"] .filters { border-bottom: 1px solid var(--line-strong); }
+[data-theme="journal"] .chip.on { background: var(--text); color: var(--surface); }
+[data-theme="journal"] .col { background: transparent; border-top: 2px solid var(--text); border-radius: 0; }
+[data-theme="journal"] .col-head { font-family: var(--display); text-transform: none; letter-spacing: 0; font-size: 15px; font-weight: 600; color: var(--text); padding-left: 2px; }
+[data-theme="journal"] .col-body { padding-left: 0; padding-right: 0; }
+[data-theme="journal"] .card { border-radius: var(--radius); }
+[data-theme="journal"] .card .title { font-size: 15px; }
+[data-theme="journal"] .card.selected { box-shadow: 0 0 0 2px var(--accent); }
+[data-theme="journal"] .panel { background: var(--surface); border-left: 1px solid var(--line-strong); }
+[data-theme="journal"] .grow-wrap::after, [data-theme="journal"] .title-input { font-family: var(--display); font-size: 21px; font-weight: 600; }
+[data-theme="journal"] .section-head { font-family: var(--display); text-transform: none; letter-spacing: 0; font-size: 15px; color: var(--text); border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+[data-theme="journal"] .btn.primary { background: var(--accent); border-color: var(--accent); }
+[data-theme="journal"] .btn.primary:hover { background: #7f2f14; }
+[data-theme="journal"] .chip.pick.on { background: var(--accent-soft); color: var(--accent); }
+[data-theme="journal"] .input:focus, [data-theme="journal"] .select:focus, [data-theme="journal"] .textarea:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+[data-theme="journal"] .state h3 { font-family: var(--display); font-size: 22px; }
+[data-theme="journal"] .modal h3 { font-family: var(--display); font-size: 20px; }
+

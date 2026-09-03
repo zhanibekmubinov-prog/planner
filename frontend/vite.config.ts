@@ -7,7 +7,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      manifest: { name: "Planner", short_name: "Planner", display: "standalone", theme_color: "#111111", background_color: "#ffffff" },
+      manifest: { name: "Planner", short_name: "Planner", display: "standalone", theme_color: "#e9e3d5", background_color: "#f3efe6" },
     }),
   ],
 });

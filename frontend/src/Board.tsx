@@ -146,6 +146,7 @@ function TaskCard({ task, selected, showDirs, onClick }: { task: Task; selected:
       </span>
       <div className="title">{task.title}</div>
       <div className="meta">
+        <span className="code mono">#{task.id}</span>
         <span className={`pri p${task.priority}`}>P{task.priority}</span>
         {task.deadline && <span className={`mono ${overdue ? "over" : ""}`}>{overdue ? "⚑ " : ""}до {showDate(task.deadline)}</span>}
         {task.next_check_at && <span className={`mono ${checkDue ? "warn" : ""}`}>⟳ {showDate(task.next_check_at)}</span>}

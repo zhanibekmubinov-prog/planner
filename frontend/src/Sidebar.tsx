@@ -10,6 +10,11 @@ type Props = {
 export default function Sidebar({ directions, tasks, view, onView, onNewDirection }: Props) {
   const open = tasks.filter((t) => t.status !== "done");
   const countFor = (id: number) => open.filter((t) => t.directions.some((d) => d.id === id)).length;
+  // Доля закрытых задач направления — тонкая шкала под названием
+  const doneRatio = (id: number) => {
+    const all = tasks.filter((t) => t.directions.some((d) => d.id === id));
+    return all.length ? all.filter((t) => t.status === "done").length / all.length : 0;
+  };
   const isBoard = (id: number | null) => view.kind === "board" && view.directionId === id;
   const visible = directions.filter((d) => d.status !== "archived");
 
@@ -36,6 +41,7 @@ export default function Sidebar({ directions, tasks, view, onView, onNewDirectio
             <span className="swatch" style={{ background: dirColor(d) }} />
             <span className="name">{d.name}</span>
             <span className="count">{countFor(d.id)}</span>
+            <span className="meter" aria-hidden="true"><span style={{ width: `${Math.round(doneRatio(d.id) * 100)}%`, background: dirColor(d) }} /></span>
           </button>
         ))}
       </div>

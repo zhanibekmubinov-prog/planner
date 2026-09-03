@@ -90,7 +90,7 @@ export default function Board({ store, direction, selectedId, onSelect, onEditDi
           <button className="btn primary" onClick={() => createTask("backlog")}>+ Задача</button>
         </div>
       ) : (
-        <div className="board">
+        <div className="board" style={{ ["--cols" as string]: columns.length }}>
           {columns.map((s) => {
             const items = tasks.filter((t) => t.status === s);
             return (

@@ -47,7 +47,7 @@ export default function App() {
   const showPanel = view.kind === "board" && selected !== null;
 
   return (
-    <div className={`shell ${showPanel ? "with-panel" : ""}`}>
+    <div className="shell">
       <Sidebar
         directions={store.directions} tasks={store.tasks} view={view}
         onView={(v) => { setView(v); if (v.kind !== "board") setSelectedId(null); }}

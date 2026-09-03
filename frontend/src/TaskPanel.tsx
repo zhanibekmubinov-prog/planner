@@ -49,75 +49,88 @@ export default function TaskPanel({ store, task, onClose, onDeleted }: Props) {
 
   const toggle = (arr: number[], id: number) => (arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
 
+  const dirs = store.directions.filter((d) => draft.direction_ids.includes(d.id));
+  const accent = dirs.length ? dirColor(dirs[0]) : "var(--line-strong)";
+
   return (
-    <aside className="panel" aria-label="Карточка задачи">
-      <div className="panel-head">
-        <span className="id">#{task.id}</span>
-        <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>
-        <span className="spacer" />
-        <button className="btn ghost icon" onClick={onClose} title="Закрыть" aria-label="Закрыть">×</button>
+    <div className="backdrop task-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="task-modal" role="dialog" aria-modal="true" aria-label="Карточка задачи" style={{ ["--dir" as string]: accent }}>
+        <div className="tm-head">
+          <span className="tm-rail">{(dirs.length ? dirs : [null]).map((d, i) => <span key={i} style={{ background: d ? dirColor(d) : "var(--line-strong)" }} />)}</span>
+          <span className="id">#{task.id}</span>
+          <span className={`status-pill st-${draft.status}`}>{STATUS_LABEL[draft.status]}</span>
+          <span className={`pri p${draft.priority}`}>P{draft.priority}</span>
+          <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>
+          <span className="spacer" />
+          <button className="btn ghost icon" onClick={onClose} title="Закрыть (Esc)" aria-label="Закрыть">×</button>
+        </div>
+
+        <div className="tm-body">
+          <div className="tm-main">
+            <div className="grow-wrap" data-value={draft.title || "Название задачи"}>
+              <textarea
+                className="title-input" rows={1} value={draft.title} placeholder="Название задачи"
+                onChange={(e) => change({ title: e.target.value.replace(/\n/g, " ") })}
+                onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
+              />
+            </div>
+
+            <div className="section">
+              <div className="section-head">Направления <span className="n">{draft.direction_ids.length}</span></div>
+              <div className="chips">
+                {store.directions.filter((d) => d.status !== "archived" || draft.direction_ids.includes(d.id)).map((d) => (
+                  <button key={d.id} className={`chip pick ${draft.direction_ids.includes(d.id) ? "on" : ""}`} style={{ ["--pick" as string]: dirColor(d) }} onClick={() => change({ direction_ids: toggle(draft.direction_ids, d.id) })}>
+                    <span className="dot" style={{ background: dirColor(d) }} />{d.name}
+                  </button>
+                ))}
+                {store.directions.length === 0 && <span className="hint">Направлений ещё нет — добавьте в левой панели.</span>}
+              </div>
+            </div>
+
+            <div className="field">
+              <label>Описание</label>
+              <textarea className="textarea" rows={5} value={draft.description ?? ""} onChange={(e) => change({ description: e.target.value || null })} placeholder="Что нужно сделать, критерий готовности, контекст" />
+            </div>
+
+            <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} />
+
+            <div className="danger-zone">
+              <span className="hint">Создана {showDateTime(task.created_at)}</span>
+              <button className="btn danger sm" onClick={remove}>Удалить задачу</button>
+            </div>
+          </div>
+
+          <div className="tm-side">
+            <div className="tm-props">
+              <div className="field">
+                <label>Статус</label>
+                <select className={`select st-${draft.status}`} value={draft.status} onChange={(e) => change({ status: e.target.value as TaskStatus })}>
+                  {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>Приоритет</label>
+                <select className="select" value={draft.priority} onChange={(e) => change({ priority: Number(e.target.value) })}>
+                  <option value={1}>P1 — критично</option><option value={2}>P2 — высокий</option><option value={3}>P3 — обычный</option>
+                  <option value={4}>P4 — низкий</option><option value={5}>P5 — когда-нибудь</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Дедлайн</label>
+                <input className="input" type="date" value={toDateInput(draft.deadline)} onChange={(e) => change({ deadline: e.target.value || null })} />
+              </div>
+              <div className="field">
+                <label>Следующая проверка</label>
+                <input className="input" type="datetime-local" value={toDateTimeInput(draft.next_check_at)} onChange={(e) => change({ next_check_at: fromDateTimeInput(e.target.value) })} />
+              </div>
+            </div>
+
+            <DelegationsSection store={store} taskId={task.id} />
+            <RemindersSection store={store} taskId={task.id} />
+          </div>
+        </div>
       </div>
-
-      <div className="panel-body">
-        <div className="grow-wrap" data-value={draft.title || "Название задачи"}>
-          <textarea
-            className="title-input" rows={1} value={draft.title} placeholder="Название задачи"
-            onChange={(e) => change({ title: e.target.value.replace(/\n/g, " ") })}
-            onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
-          />
-        </div>
-
-        <div className="grid2">
-          <div className="field">
-            <label>Статус</label>
-            <select className="select" value={draft.status} onChange={(e) => change({ status: e.target.value as TaskStatus })}>
-              {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>Приоритет</label>
-            <select className="select" value={draft.priority} onChange={(e) => change({ priority: Number(e.target.value) })}>
-              <option value={1}>P1 — критично</option><option value={2}>P2 — высокий</option><option value={3}>P3 — обычный</option>
-              <option value={4}>P4 — низкий</option><option value={5}>P5 — когда-нибудь</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Дедлайн</label>
-            <input className="input" type="date" value={toDateInput(draft.deadline)} onChange={(e) => change({ deadline: e.target.value || null })} />
-          </div>
-          <div className="field">
-            <label>Следующая проверка</label>
-            <input className="input" type="datetime-local" value={toDateTimeInput(draft.next_check_at)} onChange={(e) => change({ next_check_at: fromDateTimeInput(e.target.value) })} />
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Описание</label>
-          <textarea className="textarea" value={draft.description ?? ""} onChange={(e) => change({ description: e.target.value || null })} placeholder="Что нужно сделать, критерий готовности, контекст" />
-        </div>
-
-        <div className="section">
-          <div className="section-head">Направления <span className="n">{draft.direction_ids.length}</span></div>
-          <div className="chips">
-            {store.directions.filter((d) => d.status !== "archived" || draft.direction_ids.includes(d.id)).map((d) => (
-              <button key={d.id} className={`chip pick ${draft.direction_ids.includes(d.id) ? "on" : ""}`} onClick={() => change({ direction_ids: toggle(draft.direction_ids, d.id) })}>
-                <span className="dot" style={{ background: dirColor(d) }} />{d.name}
-              </button>
-            ))}
-            {store.directions.length === 0 && <span className="hint">Направлений ещё нет — добавьте в левой панели.</span>}
-          </div>
-        </div>
-
-        <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} />
-        <DelegationsSection store={store} taskId={task.id} />
-        <RemindersSection store={store} taskId={task.id} />
-
-        <div className="danger-zone">
-          <span className="hint">Создана {showDateTime(task.created_at)}</span>
-          <button className="btn danger sm" onClick={remove}>Удалить задачу</button>
-        </div>
-      </div>
-    </aside>
+    </div>
   );
 }
 

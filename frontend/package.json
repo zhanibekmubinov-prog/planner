@@ -12,6 +12,7 @@
     "start": "serve -s dist -l ${PORT:-3000}"
   },
   "dependencies": {
+    "@fontsource/michroma": "^5.3.0",
     "@fontsource/rubik": "^5.3.0",
     "@fontsource/source-code-pro": "^5.3.0",
     "@fontsource/source-serif-4": "^5.3.0",

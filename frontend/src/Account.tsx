@@ -16,7 +16,7 @@ export function LoginScreen({ error }: { error?: string | null }) {
   return (
     <div className="login">
       <div className="login-card">
-        <div className="brand"><h1>CIS Planner</h1></div>
+        <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1></div>
         <p className="login-lead">Направления, задачи, поручения и майндмапы — в одном месте. Войдите рабочей учётной записью.</p>
         {cfg === null ? <span className="hint">проверяю настройки…</span> : cfg.microsoft ? (
           <a className="btn primary login-ms" href={`${API_BASE}/api/auth/login`}>

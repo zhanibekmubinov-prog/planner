@@ -9,6 +9,7 @@ import "@fontsource/source-serif-4/600.css";
 import "@fontsource/source-serif-4/700.css";
 import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/500.css";
+import "@fontsource/michroma/400.css";
 
 document.documentElement.dataset.theme = "journal";
 

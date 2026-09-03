@@ -522,3 +522,14 @@ a { color: var(--accent); }
 .ps-task { text-align: left; cursor: pointer; width: 100%; font: inherit; color: inherit; }
 .ps-task:hover { border-color: var(--accent); background: var(--surface-2); }
 .item .primary { font-family: var(--display, inherit); }
+
+/* ---- Логотип: фирменный знак CIS + «PLANNER» в стиле подписи логотипа ---- */
+.brand h1 { display: flex; flex-direction: column; align-items: flex-start; line-height: 1; font-style: normal; }
+.brand .brand-mark { height: 40px; width: auto; display: block; }
+.brand .brand-name {
+  font-family: "Michroma", "Eurostile", "Bank Gothic", var(--font); font-size: 12.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: #0b2f9e; font-weight: 400; margin-top: 5px; transform: scaleX(1.06); transform-origin: left;
+}
+.login-card .brand .brand-mark { height: 72px; } .login-card .brand .brand-name { font-size: 20px; margin-top: 8px; }
+.brand .ver { align-self: flex-end; margin: 0 0 1px 8px; }
+@media (max-width: 900px) { .brand h1 { flex-direction: row; align-items: center; gap: 8px; } .brand .brand-mark { height: 26px; } .brand .brand-name { margin: 0; font-size: 11px; } }

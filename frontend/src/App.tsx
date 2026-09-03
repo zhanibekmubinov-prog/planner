@@ -3,6 +3,7 @@ import { Direction } from "./api";
 import Board from "./Board";
 import DirectionModal from "./DirectionModal";
 import { PeoplePage, ToolsPage } from "./Registry";
+import Overview from "./Overview";
 import Sidebar, { View } from "./Sidebar";
 import { useStore } from "./store";
 import TaskPanel from "./TaskPanel";
@@ -10,7 +11,7 @@ import "./styles.css";
 
 export default function App() {
   const store = useStore();
-  const [view, setView] = useState<View>({ kind: "board", directionId: null });
+  const [view, setView] = useState<View>({ kind: "overview" });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [dirModal, setDirModal] = useState<{ open: boolean; direction: Direction | null }>({ open: false, direction: null });
 
@@ -53,6 +54,13 @@ export default function App() {
         )}
         {store.loading ? (
           <div className="state"><span className="mono">загрузка…</span></div>
+        ) : view.kind === "overview" ? (
+          <Overview
+            store={store}
+            onOpenDirection={(id) => setView({ kind: "board", directionId: id })}
+            onOpenTask={(dirId, taskId) => { setView({ kind: "board", directionId: dirId }); setSelectedId(taskId); }}
+            onNewDirection={() => setDirModal({ open: true, direction: null })}
+          />
         ) : view.kind === "people" ? (
           <PeoplePage store={store} />
         ) : view.kind === "tools" ? (

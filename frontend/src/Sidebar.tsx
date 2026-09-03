@@ -1,6 +1,6 @@
 import { Direction, dirColor, Task } from "./api";
 
-export type View = { kind: "board"; directionId: number | null } | { kind: "people" } | { kind: "tools" };
+export type View = { kind: "overview" } | { kind: "board"; directionId: number | null } | { kind: "people" } | { kind: "tools" };
 
 type Props = {
   directions: Direction[]; tasks: Task[]; view: View;
@@ -27,6 +27,11 @@ export default function Sidebar({ directions, tasks, view, onView, onNewDirectio
         <button onClick={onNewDirection} title="Новое направление" aria-label="Новое направление">+</button>
       </div>
       <div className="side-list">
+        <button className={`side-item ${view.kind === "overview" ? "active" : ""}`} onClick={() => onView({ kind: "overview" })}>
+          <span className="swatch map" />
+          <span className="name">Карта направлений</span>
+          <span className="count" />
+        </button>
         <button className={`side-item ${isBoard(null) ? "active" : ""}`} onClick={() => onView({ kind: "board", directionId: null })}>
           <span className="swatch" style={{ background: "linear-gradient(135deg,#2F6FED,#0E9F6E,#D97706)" }} />
           <span className="name">Все задачи</span>

@@ -18,7 +18,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _states: dict[str, float] = {}          # anti-CSRF state → время создания (живёт 10 минут)
 _jwks: dict = {"keys": None, "exp": 0.0}
 
-AUTHORITY = "https://login.microsoftonline.com/{tenant}/v2.0"
+AUTHORITY = "https://login.microsoftonline.com/{tenant}/v2.0"          # issuer + openid-configuration
+OAUTH = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0"        # authorize / token
 
 
 def _cleanup_states() -> None:
@@ -43,7 +44,7 @@ def login():
         "client_id": settings.ms_client_id, "response_type": "code", "redirect_uri": settings.ms_redirect_uri,
         "response_mode": "query", "scope": "openid profile email", "state": state, "prompt": "select_account",
     }
-    return RedirectResponse(f"{AUTHORITY.format(tenant=settings.ms_tenant_id)}/authorize?{urlencode(params)}")
+    return RedirectResponse(f"{OAUTH.format(tenant=settings.ms_tenant_id)}/authorize?{urlencode(params)}")
 
 
 async def _jwks_keys() -> list[dict]:
@@ -78,7 +79,7 @@ async def callback(code: str = Query(...), state: str = Query(...), db: Session 
     data = {"client_id": settings.ms_client_id, "client_secret": settings.ms_client_secret, "code": code,
             "redirect_uri": settings.ms_redirect_uri, "grant_type": "authorization_code", "scope": "openid profile email"}
     async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(f"{AUTHORITY.format(tenant=settings.ms_tenant_id)}/token", data=data)
+        r = await c.post(f"{OAUTH.format(tenant=settings.ms_tenant_id)}/token", data=data)
     if r.status_code >= 300:
         raise HTTPException(401, f"Microsoft не выдал токен: {r.text[:300]}")
     claims = await _verify_id_token(r.json()["id_token"])

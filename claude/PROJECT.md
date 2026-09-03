@@ -11,7 +11,7 @@
 - Монорепо: `backend/` (FastAPI + SQLAlchemy 2 + Alembic + Postgres), `frontend/` (React 18 + Vite + TS, PWA), `agents/` (пусто, шаг 4+), `claude/` (эти заметки).
 - Фронт ↔ бэк только через REST `/api/*`. Мобильное приложение позже станет вторым клиентом того же API.
 - Railway, один проект, три сервиса: `postgres`, `backend` (Dockerfile, root `backend`), `frontend` (Nixpacks, root `frontend`, `serve -s dist`).
-- Авторизация: заголовок `X-API-Token` = env `API_TOKEN`. Один токен на бэке и фронте.
+- Авторизация (v0.3): вход через Microsoft Entra (OIDC), сессия — JWT в `Authorization: Bearer`. Служебный `X-API-Token` остаётся для Swagger/скриптов и действует от имени владельца (`OWNER_EMAIL`). Видимость: каждый видит свои направления/задачи/тулы/майндмапы + задачи, порученные ему.
 - Миграции применяются при старте бэкенда (`alembic upgrade head` в Dockerfile CMD).
 
 ## Модель данных (решения владельца, 2026-09-02)
@@ -22,7 +22,7 @@
 - `Task.outlook_event_id` — чтобы обновлять событие в Outlook, а не дублировать.
 - `MindMap` — title, `direction_id` (SET NULL), `task_id` (CASCADE), `data` JSON-дерево узлов.
 - `ActivityLog` пишется на create и смену статуса — сырьё для health-score направлений.
-- Люди: `Person` (имя, telegram_chat_id, email); `Delegation` (task, person, check_at, status).
+- Люди: `Person` (имя, telegram_chat_id, email, `user_id` — связь с аккаунтом); `Delegation` (task, person, check_at, status, `report` исполнителя, `notified_at`, `assigned_notified_at`). `User` (email, name, ms_oid, is_admin, telegram_chat_id, digest_enabled). `owner_id` у Direction/Task/Tool/MindMap.
 
 ## Решения по UI (владелец, 2026-09-03)
 - Референс — **Huly**: тёмная левая панель направлений, канбан по статусам, карточка задачи открывается в правой панели. Плотный рабочий инструмент, не «личный дневник».
@@ -37,6 +37,11 @@
 - Telegram — отдельный новый бот для планнера (не CIS-боты). Email и календарь — Microsoft Graph, приложение в Azure AD с application-правами `Mail.Send`, `Calendars.ReadWrite`, ящик `MS_MAILBOX`.
 - Утренняя сводка: `DIGEST_TIME` (08:30), `DIGEST_CHANNELS` (telegram,email), `DIGEST_WEEKDAYS_ONLY`.
 - Переменные бэкенда: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_MAILBOX`, `NOTIFY_EMAIL_TO`, `FRONTEND_URL`, `APP_TIMEZONE`, `SCHEDULER_ENABLED`, `SCHEDULER_INTERVAL_SEC`.
+
+## Решения по многопользовательскому режиму (владелец, 2026-09-03)
+- Вход — только рабочие учётки Microsoft (домен `cis.kz`). Паролей в системе нет.
+- Каждый видит своё + порученное ему. Поручённая задача появляется у исполнителя в «Мне поручено»; он меняет статус и пишет отчёт, автор видит.
+- Сводка по человеку — то, что Я ему поручил (не всё, что у него есть).
 
 ## Дорожная карта
 0. ✅ Каркас (бэк, фронт-заглушка, compose, Railway).

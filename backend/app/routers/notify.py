@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import get_db
 from ..notify import NotifyError, send_email, send_telegram, upsert_calendar_event
-from ..scheduler import process_delegations, process_due, send_digest
+from ..auth import current_user
+from .. import models
+from ..scheduler import chat_id_for, process_assignments, process_delegations, process_due, send_digest
 
 router = APIRouter(prefix="/notify", tags=["notify"])
 
@@ -30,14 +32,17 @@ class TestIn(BaseModel):
 
 
 @router.post("/test")
-async def test(data: TestIn):
+async def test(data: TestIn, user: models.User = Depends(current_user)):
+    """Тест каналов — для текущего пользователя (его Telegram chat id и почта)."""
     try:
         if data.channel == "telegram":
-            await send_telegram("✅ Planner: тестовое сообщение. Канал Telegram работает.")
+            chat = chat_id_for(user)
+            if not chat: raise NotifyError("У вас не указан Telegram chat id — заполните в Профиле")
+            await send_telegram("✅ Planner: тестовое сообщение. Канал Telegram работает.", chat)
         elif data.channel == "email":
-            await send_email("Planner: тест", "<p>Канал email работает.</p>")
+            await send_email("Planner: тест", "<p>Канал email работает.</p>", user.email)
         elif data.channel == "outlook_calendar":
-            ev = await upsert_calendar_event(None, "Planner: тестовое событие", "<p>Календарь подключён.</p>", datetime.now(timezone.utc).astimezone())
+            ev = await upsert_calendar_event(None, "Planner: тестовое событие", "<p>Календарь подключён.</p>", datetime.now(timezone.utc).astimezone(), mailbox=user.email)
             return {"ok": True, "event_id": ev}
         else:
             raise HTTPException(400, "channel must be telegram | email | outlook_calendar")
@@ -47,9 +52,9 @@ async def test(data: TestIn):
 
 
 @router.post("/run-now")
-async def run_now(db: Session = Depends(get_db)):
-    """Принудительно обработать напоминания и проверки поручений, у которых время уже наступило."""
-    return {"reminders": await process_due(db), "delegations": await process_delegations(db)}
+async def run_now(db: Session = Depends(get_db), _: models.User = Depends(current_user)):
+    """Принудительно обработать напоминания, проверки и уведомления о поручениях."""
+    return {"reminders": await process_due(db), "delegations": await process_delegations(db), "assignments": await process_assignments(db)}
 
 
 class DigestIn(BaseModel):
@@ -57,6 +62,6 @@ class DigestIn(BaseModel):
 
 
 @router.post("/digest")
-async def digest_now(data: DigestIn | None = None, db: Session = Depends(get_db)):
-    """Отправить утреннюю сводку прямо сейчас (для проверки). Не влияет на ежедневную отправку."""
-    return await send_digest(db, channels=(data.channels if data else None), manual=True)
+async def digest_now(data: DigestIn | None = None, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
+    """Отправить МОЮ утреннюю сводку прямо сейчас (для проверки). Не влияет на ежедневную отправку."""
+    return await send_digest(db, user, channels=(data.channels if data else None), manual=True)

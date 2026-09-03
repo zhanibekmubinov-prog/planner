@@ -6,6 +6,13 @@ class Settings(BaseSettings):
     api_token: str = "change-me"
     cors_origins: str = "http://localhost:5173"
 
+    # --- Пользователи и вход через Microsoft (делегированный OIDC) ---
+    owner_email: str = ""          # владелец/админ: этот пользователь получает старые данные и права админа
+    session_secret: str = "change-me-too"   # подпись наших сессионных JWT
+    session_days: int = 30
+    ms_redirect_uri: str = ""      # https://<backend>/api/auth/callback — должен совпадать с Entra
+    allowed_email_domains: str = ""  # напр. "cis.kz" — пусто = любой домен тенанта
+
     # --- Напоминания (шаг 4). Пустое значение = канал выключен. ---
     scheduler_enabled: bool = True
     scheduler_interval_sec: int = 60
@@ -36,6 +43,14 @@ class Settings(BaseSettings):
     @property
     def digest_channel_list(self) -> list[str]:
         return [c.strip() for c in self.digest_channels.split(",") if c.strip()]
+
+    @property
+    def allowed_domains(self) -> list[str]:
+        return [d.strip().lower() for d in self.allowed_email_domains.split(",") if d.strip()]
+
+    @property
+    def ms_login_ready(self) -> bool:
+        return bool(self.ms_tenant_id and self.ms_client_id and self.ms_client_secret and self.ms_redirect_uri)
 
     @property
     def telegram_ready(self) -> bool:

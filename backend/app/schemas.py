@@ -7,6 +7,25 @@ class ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UserOut(ORM):
+    id: int
+    email: str
+    name: str
+    is_admin: bool
+    telegram_chat_id: str | None = None
+    digest_enabled: bool = True
+
+class UserBrief(ORM):
+    id: int
+    name: str
+    email: str
+
+class ProfileIn(BaseModel):
+    name: str
+    telegram_chat_id: str | None = None
+    digest_enabled: bool = True
+
+
 class DirectionIn(BaseModel):
     name: str
     description: str | None = None
@@ -42,6 +61,7 @@ class TaskOut(ORM):
     updated_at: datetime
     directions: list[DirectionOut]
     tools: list["ToolOut"]
+    owner: UserBrief | None = None
 
 
 class PersonIn(BaseModel):
@@ -52,6 +72,7 @@ class PersonIn(BaseModel):
 
 class PersonOut(PersonIn, ORM):
     id: int
+    user_id: int | None = None
 
 
 class DelegationIn(BaseModel):
@@ -65,7 +86,13 @@ class DelegationOut(DelegationIn, ORM):
     id: int
     assigned_at: datetime
     notified_at: datetime | None = None
+    report: str | None = None
     person: PersonOut
+
+
+class DelegationReportIn(BaseModel):
+    status: DelegationStatus
+    report: str | None = None
 
 
 class ToolIn(BaseModel):

@@ -60,7 +60,7 @@ async def send_email(subject: str, html: str, to: str | None = None) -> None:
     await _graph("POST", f"/users/{settings.ms_mailbox}/sendMail", body)
 
 
-async def upsert_calendar_event(event_id: str | None, subject: str, html: str, start: datetime, minutes: int = 30) -> str:
+async def upsert_calendar_event(event_id: str | None, subject: str, html: str, start: datetime, minutes: int = 30, mailbox: str | None = None) -> str:
     """Создаёт или обновляет событие в календаре ms_mailbox. Возвращает id события."""
     payload = {
         "subject": subject,
@@ -70,7 +70,7 @@ async def upsert_calendar_event(event_id: str | None, subject: str, html: str, s
         "isReminderOn": True, "reminderMinutesBeforeStart": 15,
         "categories": ["Planner"],
     }
-    base = f"/users/{settings.ms_mailbox}/events"
+    base = f"/users/{mailbox or settings.ms_mailbox}/events"
     if event_id:
         try:
             await _graph("PATCH", f"{base}/{event_id}", payload)

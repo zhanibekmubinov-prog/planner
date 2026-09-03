@@ -1,16 +1,18 @@
 import { Direction, dirColor, MIND_COLOR, Task } from "./api";
 import { MindGlyph } from "./MindMaps";
+import { UserChip } from "./Account";
+import type { User } from "./api";
 
 export type View =
   | { kind: "overview" } | { kind: "board"; directionId: number | null } | { kind: "people" } | { kind: "tools" }
-  | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number };
+  | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number } | { kind: "inbox" };
 
 type Props = {
-  directions: Direction[]; tasks: Task[]; view: View; mindmapCount: number;
+  directions: Direction[]; tasks: Task[]; view: View; mindmapCount: number; inboxCount: number; me: User | null; onProfile: () => void;
   onView: (v: View) => void; onNewDirection: () => void;
 };
 
-export default function Sidebar({ directions, tasks, view, mindmapCount, onView, onNewDirection }: Props) {
+export default function Sidebar({ directions, tasks, view, mindmapCount, inboxCount, me, onProfile, onView, onNewDirection }: Props) {
   const open = tasks.filter((t) => t.status !== "done");
   const countFor = (id: number) => open.filter((t) => t.directions.some((d) => d.id === id)).length;
   // Доля закрытых задач направления — тонкая шкала под названием
@@ -23,7 +25,8 @@ export default function Sidebar({ directions, tasks, view, mindmapCount, onView,
 
   return (
     <aside className="side">
-      <div className="brand"><h1>Planner</h1><span className="ver">v0.2</span></div>
+      <div className="brand"><h1>Planner</h1><span className="ver">v0.3</span></div>
+      {me && <UserChip me={me} onClick={onProfile} />}
 
       <div className="side-section">
         <span>Направления</span>
@@ -34,6 +37,11 @@ export default function Sidebar({ directions, tasks, view, mindmapCount, onView,
           <span className="swatch map" />
           <span className="name">Карта направлений</span>
           <span className="count" />
+        </button>
+        <button className={`side-item inbox-item ${view.kind === "inbox" ? "active" : ""}`} onClick={() => onView({ kind: "inbox" })}>
+          <span className="swatch inbox" />
+          <span className="name">Мне поручено</span>
+          <span className={`count ${inboxCount ? "hot" : ""}`}>{inboxCount || ""}</span>
         </button>
         <button className={`side-item ${isBoard(null) ? "active" : ""}`} onClick={() => onView({ kind: "board", directionId: null })}>
           <span className="swatch" style={{ background: "linear-gradient(135deg,#2F6FED,#0E9F6E,#D97706)" }} />

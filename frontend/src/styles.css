@@ -182,7 +182,7 @@ a { color: var(--accent); }
 .tm-rail span { width: 10px; height: 10px; border-radius: 50%; }
 .status-pill { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
 .status-pill.st-backlog { background: var(--surface); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.status-pill.st-in_progress { background: var(--dir); color: #fff; }
+.status-pill.st-in_progress { background: var(--dir, var(--accent)); color: #fff; }
 .status-pill.st-waiting { background: var(--warn-soft); color: var(--warn); }
 .status-pill.st-done { background: rgba(14,159,110,0.16); color: var(--ok); }
 .tm-body { display: grid; grid-template-columns: 1.35fr 1fr; gap: 0; overflow: hidden; min-height: 0; }
@@ -478,3 +478,45 @@ a { color: var(--accent); }
 .mm-help { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-3); pointer-events: none; }
 .mm-help kbd { font-family: var(--mono); font-size: 10.5px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 5px; margin-right: 3px; color: var(--text-2); }
 @media (max-width: 900px) { .mm-help { display: none; } .mm-title { flex: 1 1 100%; } }
+
+/* ---- Вход и профиль ---- */
+.login { min-height: 100%; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px; }
+.login-card { width: min(420px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 28px 28px 22px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 20px 50px rgba(60,45,20,0.15); border-top: 4px solid var(--accent); }
+.login-card .brand { padding: 0; } .login-card .brand h1 { font-size: 28px; color: var(--text); }
+.login-lead { margin: 0; color: var(--text-2); line-height: 1.5; }
+.login-ms { justify-content: center; padding: 12px 16px; font-size: 15px; gap: 10px; text-decoration: none; }
+.login-error { color: var(--danger); margin: 0; }
+.login-foot { margin: 6px 0 0; }
+[data-theme="journal"] .login-card .brand h1 { font-family: var(--display); font-style: italic; }
+.user-chip { display: flex; align-items: center; gap: 10px; margin: 0 8px 8px; padding: 6px 8px; border: 0; border-radius: var(--radius); background: transparent; color: var(--side-text); text-align: left; width: calc(100% - 16px); cursor: pointer; transition: background 0.12s; }
+.user-chip:hover { background: var(--side-hover); }
+.user-chip .avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; flex: none; }
+.user-chip .user-name { font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.side-item .swatch.inbox { background: var(--accent); border-radius: 3px; clip-path: polygon(0 20%, 100% 20%, 100% 100%, 0 100%); }
+.side-item .count.hot { background: var(--accent); color: #fff; border-radius: 999px; padding: 0 6px; font-weight: 600; }
+
+/* ---- Мне поручено ---- */
+.inbox-list { gap: 8px; }
+.inbox-item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.inbox-item.open { border-color: var(--line-strong); box-shadow: 0 4px 14px rgba(60,45,20,0.1); }
+.inbox-item.muted .inbox-title { color: var(--text-3); text-decoration: line-through; }
+.inbox-head { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px 14px; border: 0; background: none; cursor: pointer; }
+.inbox-head:hover { background: var(--surface-2); }
+.inbox-head .st { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.inbox-head .st-in_progress { background: var(--accent); } .inbox-head .st-waiting { background: var(--warn); } .inbox-head .st-done { background: var(--ok); }
+.inbox-title { font-family: var(--display, inherit); font-weight: 600; font-size: 15px; flex: 1; }
+.inbox-from { color: var(--text-2); font-size: 13px; }
+.inbox-head .over { color: var(--danger); }
+.inbox-body { padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); }
+.inbox-desc { margin: 8px 0 0; color: var(--text-2); line-height: 1.5; }
+
+/* ---- Люди: сводка ---- */
+.person-link { border: 0; background: none; padding: 0; font: inherit; font-family: var(--display, inherit); font-weight: 600; font-size: 15px; color: var(--text); cursor: pointer; }
+.person-link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.tag.in-app { background: var(--accent-soft); color: var(--accent); margin-left: 8px; }
+.modal.person-summary { max-width: 640px; }
+.ps-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.ps-bar span { display: block; height: 100%; background: var(--ok); }
+.ps-task { text-align: left; cursor: pointer; width: 100%; font: inherit; color: inherit; }
+.ps-task:hover { border-color: var(--accent); background: var(--surface-2); }
+.item .primary { font-family: var(--display, inherit); }

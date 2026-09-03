@@ -299,6 +299,7 @@ function DelegationsSection({ store, taskId }: { store: Store; taskId: number })
                 <span className={`secondary ${late ? "over" : ""}`}>
                   {d.check_at ? `${late ? "⚑ просрочена проверка " : "проверить "}${showDateTime(d.check_at)}` : `поручено ${showDateTime(d.assigned_at)}`}
                   {d.comment ? ` · ${d.comment}` : ""}
+                  {d.report ? ` · отчёт: «${d.report}»` : ""}
                   {d.notified_at ? " · напоминание отправлено" : ""}
                 </span>
               </div>

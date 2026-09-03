@@ -1,11 +1,12 @@
 // Справочники: Люди и Тулы. Простые таблицы с редактированием на месте.
-import { useState } from "react";
-import { del, Person, PersonIn, post, put, Tool, ToolIn, TOOL_TYPE_LABEL, ToolType } from "./api";
+import { useEffect, useState } from "react";
+import { api, del, isOverdue, Person, PersonIn, PersonSummary, post, put, showDate, showDateTime, STATUS_LABEL, Tool, ToolIn, TOOL_TYPE_LABEL, ToolType } from "./api";
 import { useConfirm } from "./confirm";
 import { Store } from "./store";
 
-export function PeoplePage({ store }: { store: Store }) {
+export function PeoplePage({ store, onOpenTask }: { store: Store; onOpenTask: (id: number) => void }) {
   const [editing, setEditing] = useState<Person | "new" | null>(null);
+  const [summaryFor, setSummaryFor] = useState<Person | null>(null);
   const confirm = useConfirm();
 
   async function save(form: PersonIn, id?: number) {
@@ -25,7 +26,8 @@ export function PeoplePage({ store }: { store: Store }) {
         <h2>Люди</h2><span className="spacer" />
         <button className="btn primary" onClick={() => setEditing("new")}>+ Человек</button>
       </div>
-      <p className="hint">Кому вы делегируете задачи. Telegram chat id и email нужны для напоминаний исполнителям (шаг 4).</p>
+      <p className="hint">Кому вы поручаете задачи. Нажмите на имя — увидите сводку: сколько поручено, что сделано, что просрочено. Люди с пометкой «в планнере» получают поручения прямо в приложение.</p>
+      {summaryFor && <PersonSummaryModal store={store} person={summaryFor} onClose={() => setSummaryFor(null)} onOpenTask={(id) => { setSummaryFor(null); onOpenTask(id); }} />}
       {editing === "new" && <PersonForm onCancel={() => setEditing(null)} onSave={(f) => save(f)} />}
       {store.people.length === 0 && editing !== "new" ? (
         <div className="state"><h3>Список пуст</h3><p>Добавьте людей, которым будете поручать задачи.</p></div>
@@ -36,14 +38,68 @@ export function PeoplePage({ store }: { store: Store }) {
             <div key={p.id} className="trow editing"><PersonForm person={p} onCancel={() => setEditing(null)} onSave={(f) => save(f, p.id)} /></div>
           ) : (
             <div key={p.id} className="trow">
-              <span><div>{p.name}</div>{p.note && <div className="sub">{p.note}</div>}</span>
+              <span>
+                <button className="person-link" onClick={() => setSummaryFor(p)}>{p.name}</button>
+                {p.user_id && <span className="tag in-app">в планнере</span>}
+                {p.note && <div className="sub">{p.note}</div>}
+              </span>
               <span className="mono hide-m">{p.telegram_chat_id || "—"}</span>
               <span className="hide-m">{p.email || "—"}</span>
-              <span className="row"><button className="btn ghost sm" onClick={() => setEditing(p)}>Изменить</button><button className="btn danger sm" onClick={() => remove(p)}>×</button></span>
+              <span className="row"><button className="btn ghost sm" onClick={() => setSummaryFor(p)}>Сводка</button><button className="btn ghost sm" onClick={() => setEditing(p)}>Изменить</button>{!p.user_id && <button className="btn danger sm" onClick={() => remove(p)}>×</button>}</span>
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Сводка по человеку: что я ему поручил и как идёт. */
+export function PersonSummaryModal({ store, person, onClose, onOpenTask }: { store: Store; person: Person; onClose: () => void; onOpenTask: (id: number) => void }) {
+  const [data, setData] = useState<PersonSummary | null>(null);
+  useEffect(() => { api<PersonSummary>(`/people/${person.id}/summary`).then(setData).catch((e) => store.setError(String(e))); }, [person.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pct = data && data.total ? Math.round((data.done / data.total) * 100) : 0;
+  return (
+    <div className="backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal person-summary" role="dialog" aria-modal="true">
+        <div className="row">
+          <h3 style={{ marginRight: "auto" }}>{person.name}</h3>
+          {person.user_id && <span className="tag in-app">в планнере</span>}
+          <button className="btn ghost icon" onClick={onClose} aria-label="Закрыть">×</button>
+        </div>
+        {!data ? <span className="hint">загрузка…</span> : data.total === 0 ? (
+          <p className="hint">Вы ещё ничего не поручали {person.name}. Поручение делается из окна задачи → «Поручить».</p>
+        ) : (
+          <>
+            <div className="ps-bar"><span style={{ width: `${pct}%` }} /></div>
+            <dl className="stats">
+              <div><dt>Поручено</dt><dd className="mono">{data.total}</dd></div>
+              <div><dt>Сделано</dt><dd className="mono">{data.done}</dd></div>
+              <div><dt>В работе</dt><dd className="mono">{data.open}</dd></div>
+              <div className={data.overdue ? "bad" : ""}><dt>Просрочено</dt><dd className="mono">{data.overdue}</dd></div>
+              <div className={data.check_due ? "bad" : ""}><dt>Пора проверить</dt><dd className="mono">{data.check_due}</dd></div>
+              <div><dt>Выполнение</dt><dd className="mono">{pct}%</dd></div>
+            </dl>
+            <div className="list">
+              {data.tasks.map((t) => {
+                const d = data.delegations.find((x) => x.task_id === t.id);
+                const late = t.status !== "done" && t.deadline && isOverdue(`${t.deadline}T23:59:59`);
+                return (
+                  <button key={t.id} className={`item ps-task ${t.status === "done" ? "muted" : ""}`} onClick={() => onOpenTask(t.id)}>
+                    <span className="primary">{t.title}</span>
+                    <span className="actions"><span className={`status-pill st-${t.status}`}>{STATUS_LABEL[t.status]}</span></span>
+                    <span className={`secondary ${late ? "over" : ""}`}>
+                      {t.deadline ? `до ${showDate(t.deadline)}` : "без срока"}
+                      {d?.check_at ? ` · проверка ${showDateTime(d.check_at)}` : ""}
+                      {d?.report ? ` · отчёт: «${d.report}»` : ""}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

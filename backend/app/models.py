@@ -34,6 +34,20 @@ tool_directions = Table("tool_directions", Base.metadata,
     Column("direction_id", ForeignKey("directions.id", ondelete="CASCADE"), primary_key=True))
 
 
+class User(Base):
+    """Пользователь планнера. Создаётся автоматически при первом входе через Microsoft."""
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    ms_oid: Mapped[str | None] = mapped_column(String(64), unique=True)   # object id в Entra
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64))
+    digest_enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Direction(Base):
     __tablename__ = "directions"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -42,6 +56,7 @@ class Direction(Base):
     goal: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(String(16))
     status: Mapped[DirectionStatus] = mapped_column(Enum(DirectionStatus), default=DirectionStatus.active)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     tasks: Mapped[list["Task"]] = relationship(secondary=task_directions, back_populates="directions")
     tools: Mapped[list["Tool"]] = relationship(secondary=tool_directions, back_populates="directions")
@@ -57,6 +72,8 @@ class Task(Base):
     deadline: Mapped[date | None] = mapped_column(Date)
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     outlook_event_id: Mapped[str | None] = mapped_column(String(300))
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    owner: Mapped["User | None"] = relationship()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks")
@@ -72,6 +89,8 @@ class Person(Base):
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64))
     email: Mapped[str | None] = mapped_column(String(200))
     note: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), unique=True)  # если человек зашёл в планнер
+    user: Mapped["User | None"] = relationship()
 
 
 class Delegation(Base):
@@ -84,6 +103,8 @@ class Delegation(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     status: Mapped[DelegationStatus] = mapped_column(Enum(DelegationStatus), default=DelegationStatus.open)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # когда отправлено «пора проверить»
+    report: Mapped[str | None] = mapped_column(Text)  # отчёт исполнителя
+    assigned_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # исполнителю сообщили о поручении
     task: Mapped[Task] = relationship(back_populates="delegations")
     person: Mapped[Person] = relationship()
 
@@ -97,6 +118,7 @@ class Tool(Base):
     # для агентов: {"spreadsheet_id": ...} / {"drive_id":..., "item_id":...} / {"bot_username":...}
     source_ref: Mapped[dict | None] = mapped_column(JSON)
     note: Mapped[str | None] = mapped_column(Text)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     tasks: Mapped[list[Task]] = relationship(secondary=tool_tasks, back_populates="tools")
     directions: Mapped[list[Direction]] = relationship(secondary=tool_directions, back_populates="tools")
 
@@ -121,6 +143,7 @@ class MindMap(Base):
     task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     # {"id": "root", "text": "...", "children": [{"id": "...", "text": "...", "children": [...], "collapsed": false}]}
     data: Mapped[dict] = mapped_column(JSON, default=dict)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     direction: Mapped["Direction | None"] = relationship()

@@ -64,16 +64,20 @@ def build_report(d: models.Direction, tasks: list[models.Task], now: datetime) -
     return r
 
 
-def collect(db: Session, now: datetime | None = None) -> dict:
+def collect(db: Session, user: models.User, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     today = now.astimezone(TZ).date()
-    directions = [d for d in db.scalars(select(models.Direction)).all() if d.status != models.DirectionStatus.archived]
-    tasks = db.scalars(select(models.Task)).unique().all()
+    directions = [d for d in db.scalars(select(models.Direction).where(models.Direction.owner_id == user.id)).all() if d.status != models.DirectionStatus.archived]
+    tasks = db.scalars(select(models.Task).where(models.Task.owner_id == user.id)).unique().all()
+    # входящие поручения (мне поручили другие)
+    pid = db.scalar(select(models.Person.id).where(models.Person.user_id == user.id))
+    inbox = db.scalars(select(models.Delegation).where(models.Delegation.person_id == pid, models.Delegation.status == models.DelegationStatus.open)).all() if pid else []
+    inbox = [d for d in inbox if d.task.owner_id != user.id and d.task.status != models.TaskStatus.done]
     open_ = [t for t in tasks if t.status != models.TaskStatus.done]
     reports = sorted((build_report(d, tasks, now) for d in directions),
                      key=lambda r: (r.direction.status == models.DirectionStatus.paused, -r.score))
     active = [r for r in reports if r.direction.status != models.DirectionStatus.paused]
-    delegs = db.scalars(select(models.Delegation).where(models.Delegation.status == models.DelegationStatus.open)).all()
+    delegs = db.scalars(select(models.Delegation).join(models.Task).where(models.Delegation.status == models.DelegationStatus.open, models.Task.owner_id == user.id)).all()
     return {
         "today": today,
         "reports": reports,
@@ -83,6 +87,7 @@ def collect(db: Session, now: datetime | None = None) -> dict:
         "check_today": [t for t in open_ if t.next_check_at and _utc(t.next_check_at).astimezone(TZ).date() <= today],
         "deleg_due": [x for x in delegs if x.check_at and _utc(x.check_at).astimezone(TZ).date() <= today and x.task.status != models.TaskStatus.done],
         "open_count": len(open_),
+        "inbox": inbox,
     }
 
 
@@ -96,6 +101,8 @@ def render(data: dict) -> tuple[str, str, str]:
     d: date = data["today"]
     title = f"Сводка на {d.strftime('%d.%m.%Y')}"
     neglected = data["neglected"]
+    if not data["reports"] and not data.get("inbox"):
+        return f"Planner · {title}", f"☀️ <b>{title}</b>\nНаправлений и поручений пока нет — начните с направления в планнере.", f"<p>{title}: направлений и поручений пока нет.</p>"
 
     tg: list[str] = [f"☀️ <b>{title}</b>"]
     if neglected:
@@ -128,6 +135,12 @@ def render(data: dict) -> tuple[str, str, str]:
         tg.append(""); tg.append("<b>👤 Спросить у людей</b>")
         for x in data["deleg_due"][:10]:
             tg.append(f"• {e(x.person.name)} — {e(x.task.title)}" + (f": {e(x.comment)}" if x.comment else ""))
+    if data.get("inbox"):
+        tg.append(""); tg.append("<b>📥 Мне поручено</b>")
+        for x in data["inbox"][:10]:
+            who = e(x.task.owner.name) if x.task.owner else "—"
+            due = f" (до {x.task.deadline.strftime('%d.%m')})" if x.task.deadline else ""
+            tg.append(f"• {e(x.task.title)}{due} — от {who}")
     tg.append(""); tg.append(f"Всего открытых задач: {data['open_count']}")
     tg_text = "\n".join(tg)
 

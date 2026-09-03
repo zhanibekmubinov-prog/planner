@@ -9,11 +9,26 @@ export class ApiError extends Error {
   }
 }
 
+// ---- Сессия пользователя (вход через Microsoft) ----
+const SESSION_KEY = "planner.session";
+export const getSession = (): string | null => { try { return localStorage.getItem(SESSION_KEY); } catch { return null; } };
+export const setSession = (t: string | null) => { try { t ? localStorage.setItem(SESSION_KEY, t) : localStorage.removeItem(SESSION_KEY); } catch { /* приватный режим */ } };
+export const API_BASE = BASE;
+const listeners = new Set<() => void>();
+export const onUnauthorized = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
+
+function authHeaders(): Record<string, string> {
+  const s = getSession();
+  if (s) return { Authorization: `Bearer ${s}` };
+  return TOKEN ? { "X-API-Token": TOKEN } : {};
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}/api${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", "X-API-Token": TOKEN, ...(init.headers || {}) },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers || {}) },
   });
+  if (res.status === 401) { setSession(null); listeners.forEach((f) => f()); }
   if (!res.ok) throw new ApiError(res.status, `${res.status} ${await res.text()}`);
   return res.status === 204 ? (undefined as T) : res.json();
 }
@@ -45,21 +60,25 @@ export type ToolIn = Omit<Tool, "id"> & { task_ids: number[]; direction_ids: num
 export type Task = {
   id: number; title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; outlook_event_id?: string | null;
-  created_at: string; updated_at: string; directions: Direction[]; tools: Tool[];
+  created_at: string; updated_at: string; directions: Direction[]; tools: Tool[]; owner?: UserBrief | null;
 };
 export type TaskIn = {
   title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; direction_ids: number[]; tool_ids: number[];
 };
 
-export type Person = { id: number; name: string; telegram_chat_id?: string | null; email?: string | null; note?: string | null };
-export type PersonIn = Omit<Person, "id">;
+export type User = { id: number; email: string; name: string; is_admin: boolean; telegram_chat_id?: string | null; digest_enabled: boolean };
+export type UserBrief = { id: number; name: string; email: string };
+
+export type Person = { id: number; name: string; telegram_chat_id?: string | null; email?: string | null; note?: string | null; user_id?: number | null };
+export type PersonIn = Omit<Person, "id" | "user_id">;
 
 export type Delegation = {
   id: number; task_id: number; person_id: number; check_at?: string | null; comment?: string | null;
-  status: DelegationStatus; assigned_at: string; notified_at?: string | null; person: Person;
+  status: DelegationStatus; assigned_at: string; notified_at?: string | null; report?: string | null; person: Person;
 };
-export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at" | "person">;
+export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at" | "report" | "person">;
+export type PersonSummary = { person: Person; total: number; open: number; done: number; overdue: number; check_due: number; tasks: Task[]; delegations: Delegation[] };
 
 export type Reminder = { id: number; task_id: number; fire_at: string; channels: Channel[]; message?: string | null; sent_at?: string | null };
 export type ReminderIn = Omit<Reminder, "id" | "sent_at">;

@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { LoginScreen, pickUpSession, ProfileModal } from "./Account";
+import InboxPage from "./Inbox";
+import { onUnauthorized } from "./api";
 import { Direction } from "./api";
 import Board from "./Board";
 import DirectionModal from "./DirectionModal";
@@ -12,7 +15,15 @@ import TaskPanel from "./TaskPanel";
 import "./styles.css";
 
 export default function App() {
+  const [authed, setAuthed] = useState<boolean>(() => pickUpSession());
+  useEffect(() => onUnauthorized(() => setAuthed(false)), []);
+  if (!authed) return <LoginScreen />;
+  return <Workspace />;
+}
+
+function Workspace() {
   const store = useStore();
+  const [profile, setProfile] = useState(false);
   const [view, setView] = useState<View>({ kind: "overview" });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [dirModal, setDirModal] = useState<{ open: boolean; direction: Direction | null }>({ open: false, direction: null });
@@ -22,6 +33,10 @@ export default function App() {
     [view, store.directions],
   );
   const selected = useMemo(() => store.tasks.find((t) => t.id === selectedId) ?? null, [store.tasks, selectedId]);
+  // Задача из «Мне поручено» (не моя) — открываем раздел входящих
+  useEffect(() => {
+    if (selectedId && !selected && store.inbox.some((t) => t.id === selectedId)) { setView({ kind: "inbox" }); setSelectedId(null); }
+  }, [selectedId, selected, store.inbox]);
 
   // Направление удалили / заархивировали — уходим на «Все задачи»
   useEffect(() => {
@@ -52,6 +67,7 @@ export default function App() {
     <div className="shell">
       <Sidebar
         directions={store.directions} tasks={store.tasks} view={view} mindmapCount={store.mindmaps.length}
+        inboxCount={store.inbox.filter((t) => t.status !== "done").length} me={store.me} onProfile={() => setProfile(true)}
         onView={(v) => { setView(v); if (v.kind !== "board") setSelectedId(null); }}
         onNewDirection={() => setDirModal({ open: true, direction: null })}
       />
@@ -85,8 +101,10 @@ export default function App() {
                 onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
             ) : <div className="state"><h3>Майндмап не найден</h3><button className="btn" onClick={() => setView({ kind: "mindmaps" })}>К списку</button></div>;
           })()
+        ) : view.kind === "inbox" ? (
+          <InboxPage store={store} />
         ) : view.kind === "people" ? (
-          <PeoplePage store={store} />
+          <PeoplePage store={store} onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
         ) : view.kind === "tools" ? (
           <ToolsPage store={store} />
         ) : store.directions.length === 0 && store.tasks.length === 0 ? (
@@ -105,6 +123,8 @@ export default function App() {
         <TaskPanel key={selected.id} store={store} task={selected} onClose={() => setSelectedId(null)} onDeleted={() => setSelectedId(null)}
           onOpenMindmap={(id) => { setSelectedId(null); setView({ kind: "mindmap", id }); }} />
       )}
+
+      {profile && store.me && <ProfileModal store={store} onClose={() => setProfile(false)} />}
 
       {dirModal.open && (
         <DirectionModal

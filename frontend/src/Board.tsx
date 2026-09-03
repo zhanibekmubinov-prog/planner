@@ -189,8 +189,8 @@ function NewTaskInput({ onSubmit, onClose }: { onSubmit: (title: string) => Prom
         }}
         disabled={busy}
       />
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="hint">Enter — добавить, Esc — закрыть</span>
+      <div className="new-task-foot">
+        <span className="hint">Enter — добавить · Esc — закрыть</span>
         <span className="row">
           <button className="btn ghost sm" onClick={onClose}>Отмена</button>
           <button className="btn primary sm" onClick={() => submit(false)} disabled={busy || !value.trim()}>Добавить</button>

@@ -767,11 +767,20 @@ def t_share_access(db, user, a):
     if target.id == user.id:
         raise ToolError("Это вы сами")
     sh = db.scalar(select(models.Share).where(models.Share.entity_type == et, models.Share.entity_id == obj.id, models.Share.user_id == target.id))
+    is_new = sh is None
     if sh:
         sh.permission = perm
     else:
         sh = models.Share(entity_type=et, entity_id=obj.id, user_id=target.id, permission=perm, granted_by=user.id); db.add(sh)
-    log(db, obj, "share", {"via": "mcp", "to": target.email, "permission": perm}); db.commit()
+    log(db, obj, "share", {"via": "mcp", "to": target.email, "permission": perm})
+    if is_new:  # уведомление «вам открыли …» — в отдельном потоке, чтобы не держать ответ Claude
+        import asyncio, threading
+        from types import SimpleNamespace
+        from .routers.shares import notify_share, share_notice
+        subject, tg, mail = share_notice(et, obj, user, perm)
+        snap = SimpleNamespace(email=target.email, telegram_chat_id=target.telegram_chat_id, is_admin=False, name=target.name)
+        threading.Thread(target=lambda: asyncio.run(notify_share(snap, subject, tg, mail)), daemon=True).start()
+    db.commit()
     name = getattr(obj, "title", None) or obj.name
     return {"shared": True, "entity_type": et, "name": name, "with": {"name": target.name, "email": target.email, "in_planner": target.ms_oid is not None},
             "permission": perm, "permission_ru": "редактирование" if perm == "edit" else "просмотр"}

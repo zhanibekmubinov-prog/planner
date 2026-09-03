@@ -744,3 +744,9 @@ fieldset.tm-main:disabled .chip.pick:not(.on) { display: none; }
   .dir-actions { justify-content: flex-start; }
 }
 .ov-shared { align-self: flex-start; margin-top: -4px; }
+
+/* низ формы быстрой задачи: подсказка ужимается, кнопки никогда не наезжают и не вылезают за край */
+.new-task-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.new-task-foot .hint { flex: 1 1 120px; min-width: 0; font-size: 11.5px; line-height: 1.3; }
+.new-task-foot .row { flex: none; margin-left: auto; }
+.new-task-foot .btn { white-space: nowrap; flex: none; }

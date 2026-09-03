@@ -4,7 +4,10 @@
 при первом входе через Microsoft она связывается по e-mail (routers/auth.py) и всё уже открыто.
 Управлять доступом (давать, менять, отзывать) может только владелец сущности.
 """
-from fastapi import APIRouter, Depends, HTTPException
+import html
+import logging
+from types import SimpleNamespace
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .. import models, schemas
@@ -14,6 +17,7 @@ from ..crud import log
 from ..db import get_db
 
 router = APIRouter(prefix="/shares", tags=["shares"])
+log_ = logging.getLogger("shares")
 
 ENTITY = {"direction": models.Direction, "project": models.Project, "task": models.Task}
 PERMS = ("view", "edit")
@@ -38,6 +42,40 @@ def _owned_entity(db: Session, user: models.User, entity_type: str, entity_id: i
 
 def _name(obj) -> str:
     return getattr(obj, "title", None) or getattr(obj, "name", "")
+
+
+KIND_RU = {"direction": "направление", "project": "проект", "task": "задачу"}
+PERM_RU = {"view": "просмотр", "edit": "редактирование"}
+
+
+def _link(entity_type: str, obj) -> str:
+    base = settings.frontend_url.rstrip("/")
+    if not base: return ""
+    if entity_type == "task": return f"{base}/?task={obj.id}"
+    if entity_type == "project": return f"{base}/?project={obj.id}"
+    return f"{base}/?direction={obj.id}"
+
+
+def share_notice(entity_type: str, obj, granter: models.User, permission: str) -> tuple[str, str, str]:
+    """Текст уведомления «вам открыли …» (тема, Telegram-HTML, письмо-HTML)."""
+    e = html.escape
+    name, kind, perm, link = e(_name(obj)), KIND_RU[entity_type], PERM_RU[permission], _link(entity_type, obj)
+    subject = f"CIS Planner · {e(granter.name)} открыл(а) вам {kind}: {_name(obj)}"
+    tg = (f"⇄ <b>Вам открыли {kind}</b>\n{name}\nОт: {e(granter.name)} · право: {perm}"
+          + (f"\n<a href=\"{link}\">Открыть в планнере</a>" if link else "") + "\nВ планнере — раздел «Общие».")
+    mail = (f"<h3 style='margin:0 0 8px'>Вам открыли {kind}: {name}</h3><p>От: {e(granter.name)}<br>Право: {perm}</p>"
+            + (f"<p><a href='{link}'>Открыть в планнере</a></p>" if link else "") + "<p>В планнере это лежит в разделе «Общие».</p>")
+    return subject, tg, mail
+
+
+async def notify_share(target: SimpleNamespace, subject: str, tg: str, mail: str) -> None:
+    """Фоновая отправка: Telegram, если у человека есть chat id, иначе почта через Graph."""
+    from ..scheduler import send_to_user
+    try:
+        res = await send_to_user(target, subject, tg, mail)  # type: ignore[arg-type]
+        log_.info("share notice to %s -> %s", target.email, res)
+    except Exception as ex:  # noqa: BLE001
+        log_.warning("share notice to %s failed: %s", target.email, ex)
 
 
 def _direction_id(obj) -> int | None:
@@ -75,7 +113,7 @@ def list_(entity_type: str, entity_id: int, db: Session = Depends(get_db), user:
 
 
 @router.post("", response_model=schemas.ShareOut, status_code=201)
-def create(data: schemas.ShareIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
+def create(data: schemas.ShareIn, background: BackgroundTasks, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
     if data.permission not in PERMS:
         raise HTTPException(400, "permission: view | edit")
     obj = _owned_entity(db, user, data.entity_type, data.entity_id)
@@ -84,12 +122,18 @@ def create(data: schemas.ShareIn, db: Session = Depends(get_db), user: models.Us
         raise HTTPException(400, "Это вы сами — доступ у вас уже есть")
     share = db.scalar(select(models.Share).where(models.Share.entity_type == data.entity_type, models.Share.entity_id == data.entity_id,
                                                   models.Share.user_id == target.id))
+    is_new = share is None
     if share:
         share.permission = data.permission
     else:
         share = models.Share(entity_type=data.entity_type, entity_id=data.entity_id, user_id=target.id, permission=data.permission, granted_by=user.id)
         db.add(share); db.flush()
     log(db, obj, "share", {"to": target.email, "permission": data.permission, "by": user.id})
+    if is_new:
+        # уведомление «вам открыли …» — один раз, при выдаче доступа (смена права не шумит)
+        subject, tg, mail = share_notice(data.entity_type, obj, user, data.permission)
+        snapshot = SimpleNamespace(email=target.email, telegram_chat_id=target.telegram_chat_id, is_admin=False, name=target.name)
+        background.add_task(notify_share, snapshot, subject, tg, mail)
     db.commit(); db.refresh(share)
     return share
 

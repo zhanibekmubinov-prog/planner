@@ -71,14 +71,15 @@ function Workspace() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Ссылка из напоминания: /?task=ID — открыть доску с этой задачей
+  // Ссылки из уведомлений: /?task=ID — карточка задачи; /?project=ID — доска проекта; /?direction=ID — карта проектов
   useEffect(() => {
     if (store.loading) return;
-    const id = Number(new URLSearchParams(window.location.search).get("task"));
-    if (id && store.tasks.some((t) => t.id === id)) {
-      setView({ kind: "board", directionId: null }); setSelectedId(id);
-      window.history.replaceState(null, "", window.location.pathname);
-    }
+    const q = new URLSearchParams(window.location.search);
+    const taskId = Number(q.get("task")), projectId = Number(q.get("project")), directionId = Number(q.get("direction"));
+    if (taskId && store.tasks.some((t) => t.id === taskId)) { setView({ kind: "board", directionId: null }); setSelectedId(taskId); }
+    else if (projectId) { const p = store.projects.find((x) => x.id === projectId); if (p) setView({ kind: "board", directionId: p.direction_id, projectId: p.id }); }
+    else if (directionId && store.directions.some((d) => d.id === directionId)) setView({ kind: "direction", directionId });
+    if (taskId || projectId || directionId) window.history.replaceState(null, "", window.location.pathname);
   }, [store.loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showPanel = view.kind === "board" && selected !== null;

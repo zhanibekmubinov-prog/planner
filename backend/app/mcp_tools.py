@@ -8,6 +8,7 @@
 несколько — возвращается ошибка со списком кандидатов, чтобы Claude уточнил у человека.
 """
 import json
+import logging
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,7 @@ from .crud import log
 from .scope import (OWNER, is_assignee, my_person_id, project_access, stamp, task_access, visible_directions, visible_projects,
                     visible_tasks_query)
 
+_log = logging.getLogger("mcp")
 TZ = ZoneInfo(settings.app_timezone)
 STATUS_RU = {"backlog": "бэклог", "in_progress": "в работе", "waiting": "ждём", "done": "выполнено"}
 STATUS_ALIASES = {
@@ -37,7 +39,21 @@ PALETTE = ["#9a3b1c", "#0f766e", "#1d4ed8", "#a16207", "#6d28d9", "#be185d", "#1
 
 
 class ToolError(Exception):
-    pass
+    """Ошибка, текст которой уходит Claude. hint — что сделать дальше, чтобы вызов прошёл."""
+
+    def __init__(self, message: str, hint: str | None = None):
+        super().__init__(message)
+        self.hint = hint
+
+
+def _list(a: dict, key: str) -> list:
+    """Список из аргумента: null → [], строка → [строка] (Claude нередко присылает одно имя строкой вместо массива)."""
+    v = a.get(key)
+    if v in (None, ""):
+        return []
+    if isinstance(v, (list, tuple)):
+        return [x for x in v if x not in (None, "")]
+    return [v]
 
 
 # ── Вспомогательное ──────────────────────────────────────────────────────────
@@ -105,6 +121,17 @@ def parse_priority(value) -> int:
     return p
 
 
+_LIST_TOOL = {"Направление": "list_directions", "Проект": "list_projects", "Задача": "list_tasks", "Человек": "list_people"}
+_MISSING_HINT = {
+    "Направление": "Направления должны существовать. Возьмите одно из доступных, либо создайте его create_direction "
+                   "(или передайте create_direction_if_missing=true в create_task), либо создайте задачу без направления.",
+    "Проект": "Проект должен уже существовать внутри направления. Посмотрите list_projects, создайте его create_project "
+              "(или передайте create_project_if_missing=true в create_task) либо уберите поле project — задача лягет прямо в направление.",
+    "Задача": "Найдите задачу через list_tasks (query=часть названия; include_done=true, если она могла быть закрыта) и повторите с её id.",
+    "Человек": "Человека нет в справочнике. Передайте create_person_if_missing=true или сначала вызовите create_person (имя, почта).",
+}
+
+
 def _match(items, ref, label: str, name_attr: str = "name"):
     """Найти одну сущность по id или названию."""
     if ref is None or str(ref).strip() == "":
@@ -114,7 +141,8 @@ def _match(items, ref, label: str, name_attr: str = "name"):
         for it in items:
             if it.id == int(s):
                 return it
-        raise ToolError(f"{label} с id {s} не найдено среди доступных вам")
+        raise ToolError(f"{label} с id {s} не найдено среди доступных вам",
+                        hint=f"Передайте название вместо id или сверьтесь со списком ({_LIST_TOOL.get(label, 'list_*')}).")
     low = s.lower()
     exact = [it for it in items if getattr(it, name_attr).strip().lower() == low]
     if len(exact) == 1:
@@ -130,9 +158,10 @@ def _match(items, ref, label: str, name_attr: str = "name"):
             return partial[0]
     if not partial:
         names = ", ".join(f"«{getattr(it, name_attr)}» (id {it.id})" for it in items[:25])
-        raise ToolError(f"{label} «{s}» не найдено. Доступные: {names or 'пока нет ни одного'}")
+        raise ToolError(f"{label} «{s}» не найдено. Доступные: {names or 'пока нет ни одного'}", hint=_MISSING_HINT.get(label))
     names = ", ".join(f"«{getattr(it, name_attr)}» (id {it.id})" for it in partial[:10])
-    raise ToolError(f"{label} «{s}»: несколько совпадений — уточните: {names}")
+    raise ToolError(f"{label} «{s}»: несколько совпадений — уточните: {names}",
+                    hint="Спросите человека, какой вариант имелся в виду, и повторите вызов с точным названием или id.")
 
 
 def my_directions(db: Session, user: models.User, include_archived=True) -> list[models.Direction]:
@@ -492,7 +521,7 @@ def t_create_task(db, user, a):
     if not title:
         raise ToolError("title: укажите название задачи")
     dirs = []
-    for ref in a.get("directions") or []:
+    for ref in _list(a, "directions"):
         try:
             dirs.append(resolve_direction(db, user, ref))
         except ToolError as e:
@@ -503,7 +532,18 @@ def t_create_task(db, user, a):
                 raise
     project = None
     if a.get("project"):
-        project = _editable(resolve_project(db, user, a["project"], dirs[0] if len(dirs) == 1 else None), "Проект")
+        try:
+            project = resolve_project(db, user, a["project"], dirs[0] if len(dirs) == 1 else None)
+        except ToolError as e:
+            if a.get("create_project_if_missing") and "не найдено" in str(e) and len(dirs) == 1:
+                project = models.Project(name=str(a["project"]).strip(), direction_id=dirs[0].id, owner_id=dirs[0].owner_id or user.id)
+                db.add(project); db.flush(); log(db, project, "create", {"via": "mcp", "by": user.id})
+                stamp(project, project_access(db, user, project))
+            elif a.get("create_project_if_missing") and "не найдено" in str(e):
+                raise ToolError(str(e), hint="Чтобы создать проект вместе с задачей, укажите ровно одно направление в directions.")
+            else:
+                raise
+        project = _editable(project, "Проект")
         if all(x.id != project.direction_id for x in dirs):
             dirs.append(project.direction)
     for d in dirs:
@@ -518,7 +558,7 @@ def t_create_task(db, user, a):
     t.project = project
     db.add(t); db.flush(); log(db, t, "create", {"via": "mcp", "by": user.id})
     check_at = parse_dt(a.get("check_at"), "check_at")
-    for ref in a.get("assign_to") or []:
+    for ref in _list(a, "assign_to"):
         p = _find_or_create_person(db, ref, bool(a.get("create_person_if_missing")))
         _add_delegation(db, user, t, p, check_at, a.get("comment"))
     if a.get("remind_at"):
@@ -538,10 +578,10 @@ def t_update_task(db, user, a):
     if a.get("status") is not None:
         old = t.status; t.status = parse_status(a["status"])
         if old != t.status: log(db, t, "status_change", {"from": old.value, "to": t.status.value, "by": user.id, "via": "mcp"}); changed.append("status")
-    for ref in a.get("add_directions") or []:
+    for ref in _list(a, "add_directions"):
         d = resolve_direction(db, user, ref)
         if d not in t.directions: t.directions.append(d); changed.append(f"+{d.name}")
-    for ref in a.get("remove_directions") or []:
+    for ref in _list(a, "remove_directions"):
         d = resolve_direction(db, user, ref)
         if d in t.directions: t.directions.remove(d); changed.append(f"-{d.name}")
     if "project" in a:
@@ -587,7 +627,7 @@ def t_add_task_note(db, user, a):
 
 def t_delegate_task(db, user, a):
     t = _owned_task(db, user, a.get("task"))
-    refs = a.get("people") or ([a["person"]] if a.get("person") else [])
+    refs = _list(a, "people") or _list(a, "person")
     if not refs:
         raise ToolError("person или people: кому поручить")
     check_at = parse_dt(a.get("check_at"), "check_at")
@@ -638,10 +678,12 @@ def _add_reminder(db, task: models.Task, fire_at, channels, message, recipient) 
     when = parse_dt(fire_at, "fire_at")
     if when is None:
         raise ToolError("fire_at: когда напомнить (ISO дата-время)")
-    chans = channels or ["telegram"]
+    chans = _list({"c": channels}, "c") or ["telegram"]
+    chans = [{"calendar": "outlook_calendar", "outlook": "outlook_calendar", "mail": "email", "почта": "email", "телеграм": "telegram", "tg": "telegram"}.get(str(c).strip().lower(), str(c).strip().lower()) for c in chans]
     bad = [c for c in chans if c not in ("telegram", "email", "outlook_calendar")]
     if bad:
-        raise ToolError(f"channels: допустимы telegram, email, outlook_calendar (получено {bad})")
+        raise ToolError(f"channels: допустимы telegram, email, outlook_calendar (получено {bad})",
+                        hint="Передайте channels массивом строк из этих трёх значений или не передавайте вовсе — тогда будет telegram.")
     rec = recipient or "owner"
     if rec not in ("owner", "assignees", "both"):
         raise ToolError("recipient: owner (мне) | assignees (исполнителям) | both (обоим)")
@@ -680,8 +722,8 @@ def t_add_tool(db, user, a):
     if typ not in [x.value for x in models.ToolType]:
         raise ToolError("type: google_sheet | excel_sharepoint | telegram_bot | notion | other")
     tool = models.Tool(name=name, type=models.ToolType(typ), url=a.get("url"), note=a.get("note"), owner_id=user.id)
-    tool.tasks = [_owned_task(db, user, r) for r in a.get("tasks") or []]
-    tool.directions = [resolve_direction(db, user, r) for r in a.get("directions") or []]
+    tool.tasks = [_owned_task(db, user, r) for r in _list(a, "tasks")]
+    tool.directions = [resolve_direction(db, user, r) for r in _list(a, "directions")]
     db.add(tool); db.flush(); log(db, tool, "create", {"via": "mcp"}); db.commit()
     return {"created": True, "tool": {"id": tool.id, "name": tool.name, "type": tool.type.value, "url": tool.url,
                                       "tasks": [t.title for t in tool.tasks], "directions": [d.name for d in tool.directions]}}
@@ -706,7 +748,8 @@ def t_create_project(db, user, a):
     d = _editable(resolve_direction(db, user, a.get("direction")), "Направление")
     dup = [p for p in my_projects(db, user) if p.direction_id == d.id and p.name.strip().lower() == name.lower()]
     if dup:
-        raise ToolError(f"Проект «{dup[0].name}» в направлении «{d.name}» уже есть (id {dup[0].id}).")
+        raise ToolError(f"Проект «{dup[0].name}» в направлении «{d.name}» уже есть (id {dup[0].id}).",
+                        hint="Создавать не нужно — используйте этот проект: передайте его название или id в поле project у create_task / update_task.")
     p = models.Project(name=name, goal=a.get("goal"), description=a.get("description"), color=a.get("color"), direction_id=d.id,
                        owner_id=d.owner_id if d.owner_id else user.id)
     db.add(p); db.flush(); log(db, p, "create", {"via": "mcp", "by": user.id}); db.commit(); db.refresh(p)
@@ -821,7 +864,7 @@ def _s(desc, **extra): return {"type": "string", "description": desc, **extra}
 def _i(desc): return {"type": "integer", "description": desc}
 def _b(desc): return {"type": "boolean", "description": desc}
 def _arr(desc): return {"type": "array", "items": {"type": "string"}, "description": desc}
-REF = "id или название (можно часть названия, без учёта регистра)"
+REF = "id или название (можно часть названия, без учёта регистра); объект должен уже существовать"
 
 TOOLS: list[dict] = [
     # чтение
@@ -874,7 +917,9 @@ TOOLS: list[dict] = [
                                                       "description": _s("описание"), "color": _s("#hex"), "status": _s("active | paused | archived")},
                      "required": ["direction"]}},
     {"name": "create_project", "handler": t_create_project,
-     "description": "Создать проект внутри направления («заведи проект Договор бурение в Эмбе»). Задачи потом привязываются к проекту.",
+     "description": "Создать проект внутри направления («заведи проект Договор бурение в Эмбе»). Направление должно уже существовать (см. list_directions, "
+                    "иначе сначала create_direction). Проект — контейнер задач; задачи привязываются к нему полем project в create_task/update_task. "
+                    "Если проект с таким названием в направлении уже есть — вернётся ошибка с его id, повторно создавать не нужно.",
      "inputSchema": {"type": "object", "properties": {"direction": _s(f"направление: {REF}"), "name": _s("название проекта"), "goal": _s("цель"),
                                                       "description": _s("описание"), "color": _s("#hex (необязательно, иначе цвет направления)")},
                      "required": ["direction", "name"]}},
@@ -885,15 +930,21 @@ TOOLS: list[dict] = [
                      "required": ["project"]}},
     {"name": "create_task", "handler": t_create_task,
      "description": "Создать задачу («запиши», «добавь задачу», «поручи X сделать Y»). Одним вызовом можно сразу привязать к направлениям, поручить людям, "
-                    "поставить дедлайн, дату проверки и напоминание. Даты — ISO (YYYY-MM-DD, дата-время YYYY-MM-DDTHH:MM по местному времени).",
+                    "поставить дедлайн, дату проверки и напоминание. Даты — ISO (YYYY-MM-DD, дата-время YYYY-MM-DDTHH:MM по местному времени). "
+                    "Направления, проект и люди должны уже существовать (ищутся по части названия) — либо передайте флаги create_*_if_missing. "
+                    "Проект без направления не создаётся: для create_project_if_missing укажите ровно одно направление. Если ничего не известно — достаточно title.",
      "inputSchema": {"type": "object", "properties": {
          "title": _s("название задачи — коротко, глаголом"), "description": _s("подробности, контекст"),
-         "directions": _arr(f"направления: {REF}; можно несколько"), "project": _s(f"проект внутри направления: {REF}; направление проекта привяжется само"),
+         "directions": _arr("направления по названию/id; можно несколько. Должны существовать (list_directions), иначе create_direction_if_missing=true"),
+         "project": _s("проект внутри направления по названию/id. Должен уже существовать (list_projects) — иначе сначала create_project "
+                       "или create_project_if_missing=true с одним направлением в directions. Направление проекта привяжется само"),
          "create_direction_if_missing": _b("создать направление, если такого нет (по умолчанию нет — лучше уточнить)"),
+         "create_project_if_missing": _b("создать проект в указанном направлении, если такого нет (нужно ровно одно направление в directions)"),
          "priority": _i("1 (самый важный) … 5 (наименее важный); по умолчанию 3"),
          "status": _s("backlog (по умолчанию) | in_progress | waiting | done"),
          "deadline": _s("дедлайн YYYY-MM-DD"), "next_check_at": _s("когда мне самому проверить задачу, ISO дата-время"),
-         "assign_to": _arr(f"кому поручить: люди по имени или id"), "create_person_if_missing": _b("добавить человека в справочник, если не найден"),
+         "assign_to": _arr("кому поручить: люди по имени или id из list_people; нового человека — с create_person_if_missing=true"),
+         "create_person_if_missing": _b("добавить человека в справочник, если не найден"),
          "check_at": _s("когда спросить исполнителя о результате (ISO дата-время) — по нему придёт «Пора проверить у X»"), "comment": _s("комментарий к поручению — что именно нужно от исполнителя"),
          "remind_at": _s("напоминание мне: ISO дата-время"), "remind_channels": _arr("telegram | email | outlook_calendar (по умолчанию telegram)"),
          "remind_message": _s("текст напоминания"), "remind_recipient": _s("owner | assignees | both")},
@@ -903,7 +954,7 @@ TOOLS: list[dict] = [
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "title": _s("новое название"), "description": _s("новое описание (заменяет)"),
                                                       "priority": _i("1–5"), "deadline": _s("YYYY-MM-DD или null"), "next_check_at": _s("ISO дата-время или null"),
                                                       "status": _s("backlog | in_progress | waiting | done"),
-                                                      "project": _s("перенести в проект (название/id) или null — убрать из проекта"),
+                                                      "project": _s("перенести в существующий проект (название/id; см. list_projects, нового — create_project) или null — убрать из проекта"),
                                                       "add_directions": _arr("добавить направления"), "remove_directions": _arr("убрать направления")},
                      "required": ["task"]}},
     {"name": "set_task_status", "handler": t_set_task_status,
@@ -916,8 +967,8 @@ TOOLS: list[dict] = [
      "description": "Дописать заметку в описание задачи с отметкой времени («запиши по задаче X, что …»). Описание не затирается.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "text": _s("текст заметки")}, "required": ["task", "text"]}},
     {"name": "delegate_task", "handler": t_delegate_task,
-     "description": "Поручить существующую задачу человеку (или нескольким). Можно задать дату проверки и комментарий, заодно дедлайн задачи. "
-                    "Для новой задачи используй create_task с assign_to.",
+     "description": "Поручить существующую задачу человеку (или нескольким). Задача и человек должны существовать (list_tasks / list_people; нового человека — "
+                    "create_person_if_missing=true). Можно задать дату проверки и комментарий, заодно дедлайн задачи. Для новой задачи используй create_task с assign_to.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "person": _s(f"исполнитель: {REF}"), "people": _arr("несколько исполнителей"),
                                                       "check_at": _s("когда спросить о результате, ISO дата-время"), "comment": _s("что именно нужно"),
                                                       "deadline": _s("заодно поставить дедлайн задачи YYYY-MM-DD"),
@@ -984,6 +1035,10 @@ def instructions_for(user: models.User) -> str:
         "После записи подтверждай одной фразой: что создано, в каком направлении, срок, кому поручено. Сводки пересказывай кратко, по делу, "
         "выделяя просроченное и то, что требует внимания; цифры не выдумывай — только из ответа инструментов.\n"
         "Удалять ничего нельзя (нет такого инструмента): вместо удаления — статус done, направление/проект в paused/archived, поручение status=open→done.\n"
+        "ОШИБКИ: если инструмент вернул isError, в ответе поле error (что не так) и hint (что сделать). Следуй hint: уточни название из списка кандидатов, "
+        "создай недостающий проект/направление/человека (create_project, create_direction, create_person или флаги create_*_if_missing) и повтори вызов. "
+        "Не повторяй тот же вызов без изменений и не объявляй человеку сбой, пока не исправил вызов по подсказке. Сначала создаётся направление, потом проект в нём, "
+        "потом задача в проекте — в этом порядке.\n"
         "Проекты: задача может лежать в проекте внутри направления («в Эмбе проект Договор основной») или прямо в направлении. "
         "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие»."
     )
@@ -992,14 +1047,27 @@ def instructions_for(user: models.User) -> str:
 def call_tool(db: Session, user: models.User, name: str, arguments) -> tuple[str, bool]:
     handler = _HANDLERS.get(name)
     if handler is None:
-        return json.dumps({"error": f"неизвестный инструмент {name}"}, ensure_ascii=False), True
+        return json.dumps({"error": f"неизвестный инструмент «{name}»", "hint": "Доступные: " + ", ".join(sorted(_HANDLERS))}, ensure_ascii=False), True
+    if isinstance(arguments, str):  # некоторые клиенты присылают аргументы JSON-строкой
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            arguments = {}
     args = arguments if isinstance(arguments, dict) else {}
+    brief_args = json.dumps(args, ensure_ascii=False, default=str)[:600]
     try:
         result = handler(db, user, args)
         return json.dumps(result, ensure_ascii=False, default=str), False
     except ToolError as e:
         db.rollback()
-        return json.dumps({"error": str(e)}, ensure_ascii=False), True
+        _log.warning("mcp %s by %s: %s | args=%s", name, user.email, e, brief_args)
+        out = {"error": str(e)}
+        if e.hint:
+            out["hint"] = e.hint
+        return json.dumps(out, ensure_ascii=False), True
     except Exception as e:  # noqa: BLE001
         db.rollback()
-        return json.dumps({"error": f"внутренняя ошибка: {type(e).__name__}: {e}"}, ensure_ascii=False), True
+        _log.exception("mcp %s by %s: внутренняя ошибка | args=%s", name, user.email, brief_args)
+        return json.dumps({"error": f"внутренняя ошибка сервера: {type(e).__name__}: {e}",
+                           "hint": "Это сбой на стороне планнера, а не в вызове. Сообщите человеку текст ошибки; не повторяйте вызов вслепую."},
+                          ensure_ascii=False), True

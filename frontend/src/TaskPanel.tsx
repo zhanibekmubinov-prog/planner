@@ -3,6 +3,7 @@ import {
   api, canEdit, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, fromDateTimeInput, isOverdue, Person, post, projColor, put,
   Recipient, RECIPIENT_LABEL, Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
 } from "./api";
+import Checklist from "./Checklist";
 import { useConfirm } from "./confirm";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
@@ -13,6 +14,7 @@ const toIn = (t: Task): TaskIn => ({
   title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
   deadline: t.deadline || null, next_check_at: t.next_check_at || null,
   direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: t.project_id ?? null,
+  checklist: t.checklist ?? [],
 });
 
 export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindmap, onShare }: Props) {
@@ -113,6 +115,8 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
               <label>Описание</label>
               <textarea className="textarea" rows={5} value={draft.description ?? ""} onChange={(e) => change({ description: e.target.value || null })} placeholder="Что нужно сделать, критерий готовности, контекст" />
             </div>
+
+            <Checklist items={draft.checklist} onChange={(checklist) => change({ checklist })} readOnly={readOnly} />
 
             <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} attached={task.tools} editable={!readOnly} />
 

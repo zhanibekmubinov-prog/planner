@@ -750,3 +750,42 @@ fieldset.tm-main:disabled .chip.pick:not(.on) { display: none; }
 .new-task-foot .hint { flex: 1 1 120px; min-width: 0; font-size: 11.5px; line-height: 1.3; }
 .new-task-foot .row { flex: none; margin-left: auto; }
 .new-task-foot .btn { white-space: nowrap; flex: none; }
+
+/* ── v0.7: чеклист внутри задачи ─────────────────────────────────────────── */
+.checklist .ck-bar { width: 96px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.checklist .ck-bar span { display: block; height: 100%; background: var(--dir, var(--accent)); transition: width 0.2s; }
+.ck-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ck-list li { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; padding: 3px 0 3px 2px; border-bottom: 1px solid var(--line); }
+.ck-list li:last-child { border-bottom: 0; }
+.ck-box { width: 16px; height: 16px; margin: 0; accent-color: var(--dir, var(--accent)); cursor: pointer; }
+.ck-text { border: 0; background: none; padding: 5px 4px; font: inherit; font-size: 13.5px; color: var(--text); width: 100%; border-radius: 4px; }
+.ck-text:hover:not([readonly]) { background: var(--surface-2); }
+.ck-text:focus { outline: 0; background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--dir, var(--accent)); }
+.ck-list li.done .ck-text { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--line-strong); }
+.ck-del { border: 0; background: none; color: var(--text-3); font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 4px; opacity: 0; cursor: pointer; }
+.ck-list li:hover .ck-del, .ck-del:focus-visible { opacity: 1; }
+.ck-del:hover { color: var(--danger); background: var(--surface-2); }
+.ck-add { display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 10px; padding-left: 2px; }
+.ck-plus { width: 16px; height: 16px; border: 1px dashed var(--line-strong); border-radius: 3px; color: var(--text-3); font-size: 13px; line-height: 14px; text-align: center; }
+.ck-add:focus-within .ck-plus { border-color: var(--dir, var(--accent)); color: var(--dir, var(--accent)); }
+.ck-add .ck-text::placeholder { color: var(--text-3); }
+/* прогресс на карточке доски и в списках карты проектов */
+.ck-tag { display: inline-flex; align-items: center; gap: 5px; }
+.ck-tag.full { color: var(--ok); }
+.ck-mini { width: 28px; height: 3px; border-radius: 2px; background: var(--line-strong); overflow: hidden; }
+.ck-mini span { display: block; height: 100%; background: currentColor; }
+.ov-tasks .ck { font-size: 11px; color: var(--text-3); }
+.ov-tasks .ck.full { color: var(--ok); }
+
+/* ── v0.7: перетаскивание задач между проектами на карте проектов ────────── */
+.ov-tasks li button { display: flex; align-items: center; gap: 10px; }
+.ov-tasks .tt { flex: 1; min-width: 0; }
+.ov-tasks .grip { color: var(--line-strong); font-size: 11px; letter-spacing: -3px; width: 8px; cursor: grab; }
+.ov-tasks li[draggable="true"] { cursor: grab; }
+.ov-tasks li[draggable="true"]:hover .grip { color: var(--text-3); }
+.ov-tasks li.dragging { opacity: 0.45; }
+.ov-tasks li.moving button { opacity: 0.6; }
+.ov-card.drop-over { outline: 2px dashed var(--dir, var(--accent)); outline-offset: 3px; background: color-mix(in srgb, var(--dir, var(--accent)) 6%, var(--surface)); transform: translateY(-1px); }
+.ov-card.drop-over .ov-tasks li button, .ov-card.drop-over .ov-empty { pointer-events: none; }
+.ov-card.loose.drop-over { background: color-mix(in srgb, var(--dir, var(--accent)) 6%, transparent); }
+@media (prefers-reduced-motion: reduce) { .checklist .ck-bar span { transition: none; } }

@@ -53,7 +53,7 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
 
   return (
     <aside className="side">
-      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.6</span></div>
+      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.7</span></div>
       {me && <UserChip me={me} onClick={onProfile} />}
 
       <div className="side-list side-top">

@@ -116,6 +116,7 @@ class Task(Base):
     owner: Mapped["User | None"] = relationship()
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
     project: Mapped["Project | None"] = relationship(back_populates="tasks")
+    checklist: Mapped[list] = mapped_column(JSON, default=list)  # [{"id": str, "text": str, "done": bool}] — пункты внутри задачи
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks")

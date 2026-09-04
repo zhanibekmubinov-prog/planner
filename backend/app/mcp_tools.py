@@ -164,6 +164,11 @@ def _match(items, ref, label: str, name_attr: str = "name"):
                     hint="Спросите человека, какой вариант имелся в виду, и повторите вызов с точным названием или id.")
 
 
+def _checklist_done_count(t: models.Task) -> str:
+    cl = t.checklist or []
+    return f"{sum(1 for c in cl if c.get('done'))}/{len(cl)}"
+
+
 def my_directions(db: Session, user: models.User, include_archived=True) -> list[models.Direction]:
     """Свои направления + открытые мне на просмотр/редактирование (access в объекте)."""
     dirs = [d for d in visible_directions(db, user) if d.access != "via"]
@@ -250,6 +255,7 @@ def task_brief(t: models.Task) -> dict:
         "project": t.project.name if t.project else None, "project_id": t.project_id,
         "assignees": [f"{d.person.name}{' ✓' if d.status == models.DelegationStatus.done else ''}" for d in t.delegations],
         "owner": t.owner.name if t.owner else None,
+        "checklist": _checklist_done_count(t) if t.checklist else None,
         "updated_at": _local(t.updated_at),
     }
 
@@ -263,6 +269,7 @@ def task_full(t: models.Task) -> dict:
         "reminders": [{"id": r.id, "fire_at": _local(r.fire_at), "channels": r.channels, "recipient": r.recipient, "message": r.message,
                        "sent": r.sent_at is not None} for r in t.reminders],
         "tools": [{"id": x.id, "name": x.name, "type": x.type.value, "url": x.url} for x in t.tools],
+        "checklist": [{"id": c.get("id"), "text": c.get("text"), "done": bool(c.get("done"))} for c in (t.checklist or [])],
     })
     return out
 
@@ -625,6 +632,43 @@ def t_add_task_note(db, user, a):
     return {"task": t.id, "title": t.title, "description": t.description}
 
 
+def t_add_checklist_items(db, user, a):
+    t = _owned_task(db, user, a.get("task"))
+    items = [str(x).strip() for x in _list(a, "items") if str(x).strip()]
+    if not items:
+        raise ToolError("items: список пунктов (строки)", hint="Передайте items массивом строк, например [\"Собрать КП\", \"Согласовать с юристом\"].")
+    import secrets
+    cl = list(t.checklist or [])
+    cl.extend({"id": secrets.token_hex(4), "text": x, "done": False} for x in items)
+    t.checklist = cl
+    log(db, t, "update", {"via": "mcp", "fields": ["checklist"]}); db.commit(); db.refresh(t)
+    return {"task": t.id, "title": t.title, "added": len(items), "progress": _checklist_done_count(t), "checklist": t.checklist}
+
+
+def t_check_item(db, user, a):
+    t = resolve_task(db, user, a.get("task"))
+    acc = task_access(db, user, t)
+    if acc == "view":
+        raise ToolError(f"Задача «{t.title}» открыта вам только на просмотр.")
+    cl = list(t.checklist or [])
+    if not cl:
+        raise ToolError(f"У задачи «{t.title}» нет чеклиста.", hint="Добавьте пункты через add_checklist_items.")
+    ref = str(a.get("item") or "").strip().lower()
+    if not ref:
+        raise ToolError("item: какой пункт отметить (текст или его часть, либо id)")
+    hits = [c for c in cl if c.get("id") == ref or str(c.get("text", "")).lower() == ref] or [c for c in cl if ref in str(c.get("text", "")).lower()]
+    if len(hits) != 1:
+        names = ", ".join(f"«{c.get('text')}»" for c in (hits or cl)[:10])
+        raise ToolError(f"Пункт «{a.get('item')}»: {'несколько совпадений' if hits else 'не найден'} — {names}",
+                        hint="Уточните пункт: передайте более полный текст или id из get_task.")
+    done = a.get("done", True)
+    done = done if isinstance(done, bool) else str(done).lower() not in ("false", "0", "нет", "no")
+    # не мутируем старые словари: иначе SQLAlchemy не увидит изменения JSON-колонки (старое == новому)
+    t.checklist = [{**c, "done": done} if c is hits[0] else dict(c) for c in cl]
+    log(db, t, "update", {"via": "mcp", "fields": ["checklist"]}); db.commit(); db.refresh(t)
+    return {"task": t.id, "title": t.title, "item": hits[0]["text"], "done": done, "progress": _checklist_done_count(t)}
+
+
 def t_delegate_task(db, user, a):
     t = _owned_task(db, user, a.get("task"))
     refs = _list(a, "people") or _list(a, "person")
@@ -966,6 +1010,15 @@ TOOLS: list[dict] = [
     {"name": "add_task_note", "handler": t_add_task_note,
      "description": "Дописать заметку в описание задачи с отметкой времени («запиши по задаче X, что …»). Описание не затирается.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "text": _s("текст заметки")}, "required": ["task", "text"]}},
+    {"name": "add_checklist_items", "handler": t_add_checklist_items,
+     "description": "Добавить пункты в чеклист задачи («добавь в задачу пункты: …», «разбей на шаги»). Пункты — галочки внутри карточки задачи; "
+                    "прогресс виден на карточке как 2/5. Для длинного свободного текста используй add_task_note.",
+     "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "items": _arr("пункты чеклиста, по одному на строку")},
+                     "required": ["task", "items"]}},
+    {"name": "check_item", "handler": t_check_item,
+     "description": "Отметить пункт чеклиста задачи выполненным (или снять отметку: done=false). Пункт ищется по тексту или его части. Доступно владельцу, редактору и исполнителю.",
+     "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "item": _s("текст пункта (или часть) либо id"), "done": _b("true — выполнен (по умолчанию), false — снять")},
+                     "required": ["task", "item"]}},
     {"name": "delegate_task", "handler": t_delegate_task,
      "description": "Поручить существующую задачу человеку (или нескольким). Задача и человек должны существовать (list_tasks / list_people; нового человека — "
                     "create_person_if_missing=true). Можно задать дату проверки и комментарий, заодно дедлайн задачи. Для новой задачи используй create_task с assign_to.",
@@ -1039,6 +1092,7 @@ def instructions_for(user: models.User) -> str:
         "создай недостающий проект/направление/человека (create_project, create_direction, create_person или флаги create_*_if_missing) и повтори вызов. "
         "Не повторяй тот же вызов без изменений и не объявляй человеку сбой, пока не исправил вызов по подсказке. Сначала создаётся направление, потом проект в нём, "
         "потом задача в проекте — в этом порядке.\n"
+        "Чеклист: «добавь пункты», «разбей на шаги» — add_checklist_items; «отметь пункт …» — check_item. "
         "Проекты: задача может лежать в проекте внутри направления («в Эмбе проект Договор основной») или прямо в направлении. "
         "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие»."
     )

@@ -76,15 +76,19 @@ export type Tool = {
 };
 export type ToolIn = Omit<Tool, "id"> & { task_ids: number[]; direction_ids: number[] };
 
+/** Пункт чеклиста внутри задачи (v0.7). id — короткая случайная строка, генерируется на клиенте. */
+export type ChecklistItem = { id: string; text: string; done: boolean };
+
 export type Task = {
   id: number; title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; outlook_event_id?: string | null;
   created_at: string; updated_at: string; directions: Direction[]; tools: Tool[]; owner?: UserBrief | null;
-  project_id?: number | null; access?: Access | null; assigned_to_me?: boolean;
+  project_id?: number | null; access?: Access | null; assigned_to_me?: boolean; checklist?: ChecklistItem[];
 };
 export type TaskIn = {
   title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; direction_ids: number[]; tool_ids: number[]; project_id?: number | null;
+  checklist: ChecklistItem[];
 };
 
 export type User = { id: number; email: string; name: string; is_admin: boolean; telegram_chat_id?: string | null; digest_enabled: boolean };

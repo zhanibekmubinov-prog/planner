@@ -83,6 +83,12 @@ class SharedWithMe(BaseModel):
     created_at: datetime
 
 
+class ChecklistItem(BaseModel):
+    id: str
+    text: str
+    done: bool = False
+
+
 class TaskIn(BaseModel):
     title: str
     description: str | None = None
@@ -93,6 +99,7 @@ class TaskIn(BaseModel):
     direction_ids: list[int] = []
     tool_ids: list[int] = []
     project_id: int | None = None
+    checklist: list[ChecklistItem] = []
 
 class TaskOut(ORM):
     id: int
@@ -109,6 +116,7 @@ class TaskOut(ORM):
     tools: list["ToolOut"]
     owner: UserBrief | None = None
     project_id: int | None = None
+    checklist: list[ChecklistItem] = []
     access: str | None = None          # owner | edit | view | assignee
     assigned_to_me: bool = False
 

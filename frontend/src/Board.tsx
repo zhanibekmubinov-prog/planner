@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { canEdit, Direction, dirColor, isOverdue, post, Project, projColor, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus } from "./api";
+import { checklistProgress } from "./Checklist";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
@@ -14,6 +15,7 @@ const toIn = (t: Task): TaskIn => ({
   title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
   deadline: t.deadline ?? null, next_check_at: t.next_check_at ?? null,
   direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: t.project_id ?? null,
+  checklist: t.checklist ?? [],
 });
 
 export default function Board({ store, direction, project, looseOnly, selectedId, onSelect, onEditDirection, onOpenDirection, onEditProject, onShare, onOpenMindmap, onMindmaps }: Props) {
@@ -49,7 +51,7 @@ export default function Board({ store, direction, project, looseOnly, selectedId
     setBusy(true);
     try {
       await post<Task>("/tasks", {
-        title: title.trim(), status, priority: 3, direction_ids: direction ? [direction.id] : [], tool_ids: [], project_id: project?.id ?? null,
+        title: title.trim(), status, priority: 3, direction_ids: direction ? [direction.id] : [], tool_ids: [], project_id: project?.id ?? null, checklist: [],
       } satisfies TaskIn);
       await store.reloadTasks();
       return true;
@@ -200,6 +202,17 @@ function NewTaskInput({ onSubmit, onClose }: { onSubmit: (title: string) => Prom
   );
 }
 
+function ChecklistTag({ items }: { items?: Task["checklist"] }) {
+  const { total, done, pct } = checklistProgress(items);
+  if (!total) return null;
+  return (
+    <span className={`tag ck-tag ${done === total ? "full" : ""}`} title={`Чеклист: ${done} из ${total}`}>
+      <span className="ck-mini" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
+      <span className="mono">{done}/{total}</span>
+    </span>
+  );
+}
+
 function TaskCard({ task, selected, showDirs, showProject, project, directions, onClick, mindmap, onOpenMindmap }: { task: Task; selected: boolean; showDirs: boolean; showProject: boolean; project?: Project; directions: Direction[]; onClick: () => void; mindmap?: { id: number }; onOpenMindmap: (id: number) => void }) {
   const [dragging, setDragging] = useState(false);
   const shared = showDirs && (task.access === "edit" || task.access === "view");   // на общей доске направления/проекта пометка избыточна
@@ -229,6 +242,7 @@ function TaskCard({ task, selected, showDirs, showProject, project, directions, 
         {shared && <span className="tag shared-tag" title={`Открыл ${task.owner?.name ?? "коллега"} · ${task.access === "edit" ? "редактирование" : "просмотр"}`}>⇄ {task.owner?.name?.split(" ")[0] ?? ""}</span>}
         {task.deadline && <span className={`mono ${overdue ? "over" : ""}`}>{overdue ? "⚑ " : ""}до {showDate(task.deadline)}</span>}
         {task.next_check_at && <span className={`mono ${checkDue ? "warn" : ""}`}>⟳ {showDate(task.next_check_at)}</span>}
+        <ChecklistTag items={task.checklist} />
         {task.tools.length > 0 && <span className="tag">{task.tools.length} тул{task.tools.length === 1 ? "" : "а"}</span>}
         {mindmap && <span style={{ marginLeft: "auto" }}><MindButton size="sm" count={1} label="" title="Открыть майндмап задачи" onClick={() => onOpenMindmap(mindmap.id)} /></span>}
       </div>

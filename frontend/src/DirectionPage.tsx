@@ -1,7 +1,9 @@
 // Страница направления — карта проектов: каждый проект карточкой со статистикой и шкалой внимания
 // (та же формула, что у Карты направлений, но уровнем ниже), плюс блок «Без проекта».
-import { useMemo } from "react";
-import { canEdit, Direction, dirColor, isOverdue, Project, projColor, showDate, STATUS_LABEL, Task } from "./api";
+// Задачи можно перетаскивать между проектами и «Без проекта» — как карточки между колонками на доске.
+import { useMemo, useState } from "react";
+import { canEdit, ChecklistItem, Direction, dirColor, isOverdue, Project, projColor, put, showDate, STATUS_LABEL, Task, TaskIn } from "./api";
+import { checklistProgress } from "./Checklist";
 import { createMindMap, MindButton } from "./MindMaps";
 import { buildReport } from "./Overview";
 import { Store } from "./store";
@@ -14,6 +16,16 @@ type Props = {
   onProjectMenu: (p: Project, e: React.MouseEvent) => void; onShare: () => void;
   onOpenMindmap: (id: number) => void; onMindmaps: () => void;
 };
+
+const DRAG_TYPE = "text/task-id";
+const TOP = 5;
+
+const toIn = (t: Task, projectId: number | null): TaskIn => ({
+  title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
+  deadline: t.deadline || null, next_check_at: t.next_check_at || null,
+  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: projectId,
+  checklist: (t.checklist ?? []) as ChecklistItem[],
+});
 
 export default function DirectionPage({ store, direction, onOpenBoard, onOpenTask, onNewProject, onEditDirection, onDirectionMenu, onProjectMenu, onShare, onOpenMindmap, onMindmaps }: Props) {
   const color = dirColor(direction);
@@ -31,6 +43,21 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
   const open = tasks.filter((t) => t.status !== "done");
   const maps = store.mindmaps.filter((m) => m.direction_id === direction.id && !m.task_id);
   const shared = direction.access === "edit" || direction.access === "view";
+
+  // Перенос задачи между проектами: PUT всей карточки с новым project_id; направление проекта бэкенд добавит сам.
+  const [moving, setMoving] = useState<number | null>(null);
+  async function moveTask(taskId: number, projectId: number | null) {
+    const t = store.tasks.find((x) => x.id === taskId);
+    if (!t || (t.project_id ?? null) === projectId || !canEdit(t.access)) return;
+    const target = projectId ? store.projects.find((p) => p.id === projectId) : null;
+    if (projectId && (!target || !canEdit(target.access))) return;
+    setMoving(taskId);
+    try {
+      store.patchTask({ ...t, project_id: projectId });   // оптимистично — карточка сразу в новом проекте
+      store.patchTask(await put<Task>(`/tasks/${t.id}`, toIn(t, projectId)));
+    } catch (e) { store.patchTask(t); store.setError(String(e)); } finally { setMoving(null); }
+  }
+  const canDrop = (projectId: number | null) => editable && (projectId === null || canEdit(store.projects.find((p) => p.id === projectId)?.access));
 
   return (
     <div className="overview dir-page" style={{ ["--dir" as string]: color }} onContextMenu={onDirectionMenu}>
@@ -75,9 +102,11 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
         <div className="ov-grid">
           {projects.map(({ project, report }) => (
             <ProjectCard key={project.id} p={project} r={report} color={projColor(project, store.directions)}
-              onOpen={() => onOpenBoard(project.id)} onTask={(id) => onOpenTask(project.id, id)} onMenu={(e) => onProjectMenu(project, e)} />
+              onOpen={() => onOpenBoard(project.id)} onTask={(id) => onOpenTask(project.id, id)} onMenu={(e) => onProjectMenu(project, e)}
+              dropTarget={canDrop(project.id) ? project.id : undefined} onDropTask={(id) => moveTask(id, project.id)} dragEnabled={editable} movingId={moving} />
           ))}
-          <article className={`ov-card loose ${loose.length === 0 ? "empty" : ""}`} style={{ ["--dir" as string]: color }}>
+          <DropCard className={`ov-card loose ${loose.length === 0 ? "empty" : ""}`} style={{ ["--dir" as string]: color }}
+            enabled={canDrop(null)} onDropTask={(id) => moveTask(id, null)}>
             <header className="ov-card-head">
               <button className="ov-name" onClick={() => onOpenBoard("none")}>
                 <span className="swatch hollow" style={{ borderColor: color }} />
@@ -85,30 +114,47 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
               </button>
               <span className="lvl lvl-ok">{looseOpen.length} откр.</span>
             </header>
-            <p className="ov-goal">Задачи направления, не привязанные к проекту.</p>
+            <p className="ov-goal">Задачи направления, не привязанные к проекту.{editable && projects.length > 0 && " Перетащите задачу на проект, чтобы перенести."}</p>
             {looseOpen.length > 0 ? (
-              <ul className="ov-tasks">
-                {[...looseOpen].sort((a, b) => a.priority - b.priority).slice(0, 5).map((t) => <TaskRow key={t.id} t={t} onClick={() => onOpenTask("none", t.id)} />)}
-                {looseOpen.length > 5 && <li className="more"><button onClick={() => onOpenBoard("none")}>ещё {looseOpen.length - 5} на доске →</button></li>}
-              </ul>
+              <TaskList tasks={[...looseOpen].sort((a, b) => a.priority - b.priority)} onTask={(id) => onOpenTask("none", id)} onBoard={() => onOpenBoard("none")} dragEnabled={editable} movingId={moving} />
             ) : (
               <p className="ov-empty">{loose.length ? "Все закрыты." : "Пусто — сюда попадают задачи без проекта."}</p>
             )}
             {editable && <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => onOpenBoard("none")}>+ Задача без проекта</button>}
-          </article>
+          </DropCard>
         </div>
       )}
     </div>
   );
 }
 
-function ProjectCard({ p, r, color, onOpen, onTask, onMenu }: { p: Project; r: ReturnType<typeof buildReport>; color: string; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void }) {
+/** Карточка-цель для перетаскивания: подсвечивается, пока над ней тянут задачу. */
+function DropCard({ enabled, onDropTask, className, children, ...rest }: { enabled: boolean; onDropTask: (taskId: number) => void; className: string; children: React.ReactNode } & React.HTMLAttributes<HTMLElement>) {
+  const [over, setOver] = useState(false);
+  return (
+    <article
+      {...rest}
+      className={`${className} ${over ? "drop-over" : ""}`}
+      onDragOver={(e) => { if (!enabled || !e.dataTransfer.types.includes(DRAG_TYPE)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (!over) setOver(true); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false); }}
+      onDrop={(e) => { setOver(false); if (!enabled) return; const id = Number(e.dataTransfer.getData(DRAG_TYPE)); if (id) { e.preventDefault(); onDropTask(id); } }}
+    >
+      {children}
+    </article>
+  );
+}
+
+function ProjectCard({ p, r, color, onOpen, onTask, onMenu, dropTarget, onDropTask, dragEnabled, movingId }: {
+  p: Project; r: ReturnType<typeof buildReport>; color: string; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void;
+  dropTarget?: number; onDropTask: (taskId: number) => void; dragEnabled: boolean; movingId: number | null;
+}) {
   const total = r.tasks.length;
   const pct = (n: number) => (total ? (n / total) * 100 : 0);
   const paused = p.status === "paused";
-  const top = [...r.open].sort((a, b) => a.priority - b.priority || (a.deadline || "9").localeCompare(b.deadline || "9")).slice(0, 5);
+  const sorted = [...r.open].sort((a, b) => a.priority - b.priority || (a.deadline || "9").localeCompare(b.deadline || "9"));
   return (
-    <article className={`ov-card proj-card ${paused ? "paused" : ""} state-${r.level.key}`} style={{ ["--dir" as string]: color }} onContextMenu={(e) => { e.stopPropagation(); onMenu(e); }}>
+    <DropCard className={`ov-card proj-card ${paused ? "paused" : ""} state-${r.level.key}`} style={{ ["--dir" as string]: color }}
+      enabled={dropTarget !== undefined} onDropTask={onDropTask} onContextMenu={(e) => { e.stopPropagation(); onMenu(e); }}>
       <header className="ov-card-head">
         <button className="ov-name" onClick={onOpen}><span className="swatch" style={{ background: color }} /><span>{p.name}</span></button>
         <span className={`lvl lvl-${r.level.key}`} title={r.level.hint}>{paused ? "На паузе" : total === 0 ? "Пусто" : r.level.label}</span>
@@ -129,25 +175,43 @@ function ProjectCard({ p, r, color, onOpen, onTask, onMenu }: { p: Project; r: R
         <div className={r.overdue.length ? "bad" : ""}><dt>Просрочено</dt><dd className="mono">{r.overdue.length}</dd></div>
       </dl>
       {total > 0 && <p className="ov-reasons">{r.reasons.length ? r.reasons.join(" · ") : "движение есть, сроки соблюдаются"}</p>}
-      {top.length > 0 ? (
-        <ul className="ov-tasks">
-          {top.map((t) => <TaskRow key={t.id} t={t} onClick={() => onTask(t.id)} />)}
-          {r.open.length > top.length && <li className="more"><button onClick={onOpen}>ещё {r.open.length - top.length} на доске →</button></li>}
-        </ul>
+      {sorted.length > 0 ? (
+        <TaskList tasks={sorted} onTask={onTask} onBoard={onOpen} dragEnabled={dragEnabled} movingId={movingId} />
       ) : (
-        <p className="ov-empty">{total === 0 ? "Задач нет — откройте доску проекта и добавьте первую." : "Все задачи закрыты."}</p>
+        <p className="ov-empty drop-hint">{total === 0 ? (dropTarget !== undefined ? "Задач нет — перетащите сюда или откройте доску проекта." : "Задач нет — откройте доску проекта и добавьте первую.") : "Все задачи закрыты."}</p>
       )}
-    </article>
+    </DropCard>
   );
 }
 
-function TaskRow({ t, onClick }: { t: Task; onClick: () => void }) {
-  const late = t.deadline && isOverdue(`${t.deadline}T23:59:59`);
+/** Список открытых задач карточки: первые пять, остальные раскрываются на месте — чтобы любую можно было перетащить. */
+function TaskList({ tasks, onTask, onBoard, dragEnabled, movingId }: { tasks: Task[]; onTask: (id: number) => void; onBoard: () => void; dragEnabled: boolean; movingId: number | null }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? tasks : tasks.slice(0, TOP);
+  const rest = tasks.length - shown.length;
   return (
-    <li>
-      <button onClick={onClick}>
+    <ul className="ov-tasks">
+      {shown.map((t) => <TaskRow key={t.id} t={t} onClick={() => onTask(t.id)} draggable={dragEnabled && canEdit(t.access)} moving={movingId === t.id} />)}
+      {rest > 0 && <li className="more"><button onClick={() => setAll(true)}>ещё {rest} — показать все</button></li>}
+      {all && tasks.length > TOP && <li className="more"><button onClick={() => setAll(false)}>свернуть</button> <button onClick={onBoard}>на доску →</button></li>}
+    </ul>
+  );
+}
+
+function TaskRow({ t, onClick, draggable, moving }: { t: Task; onClick: () => void; draggable: boolean; moving: boolean }) {
+  const late = t.deadline && isOverdue(`${t.deadline}T23:59:59`);
+  const [dragging, setDragging] = useState(false);
+  const ck = checklistProgress(t.checklist);
+  return (
+    <li className={`${dragging ? "dragging" : ""} ${moving ? "moving" : ""}`}
+      draggable={draggable}
+      onDragStart={(e) => { e.dataTransfer.setData(DRAG_TYPE, String(t.id)); e.dataTransfer.effectAllowed = "move"; setDragging(true); }}
+      onDragEnd={() => setDragging(false)}>
+      <button onClick={onClick} title={draggable ? "Открыть · перетащите на другой проект, чтобы перенести" : undefined}>
+        {draggable && <span className="grip" aria-hidden="true">⋮⋮</span>}
         <span className={`st st-${t.status}`} title={STATUS_LABEL[t.status]} />
         <span className="tt">{t.title}</span>
+        {ck.total > 0 && <span className={`mono ck ${ck.done === ck.total ? "full" : ""}`} title="Чеклист">{ck.done}/{ck.total}</span>}
         <span className={`mono td ${late ? "over" : ""}`}>{t.deadline ? showDate(t.deadline) : ""}</span>
       </button>
     </li>

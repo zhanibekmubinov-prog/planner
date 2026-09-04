@@ -1,8 +1,31 @@
 {
   "compilerOptions": {
-    "target": "ES2020", "lib": ["ES2020", "DOM", "DOM.Iterable"], "module": "ESNext",
-    "moduleResolution": "bundler", "jsx": "react-jsx", "strict": true, "noEmit": true,
-    "skipLibCheck": true, "types": ["vite/client", "vite-plugin-pwa/client"], "isolatedModules": true, "allowImportingTsExtensions": true
+    "target": "ES2020",
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [
+      "vite/client",
+      "vite-plugin-pwa/client"
+    ],
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/__tests__",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/test-setup.ts"
+  ]
 }

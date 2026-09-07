@@ -16,9 +16,12 @@ api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
 bearer = HTTPBearer(auto_error=False)
 
 
-def issue_session(user: models.User) -> str:
+def issue_session(user: models.User, days: int | None = None, password_version: int | None = None) -> str:
     now = datetime.now(timezone.utc)
-    payload = {"sub": str(user.id), "email": user.email, "iat": int(now.timestamp()), "exp": int((now + timedelta(days=settings.session_days)).timestamp())}
+    payload = {"sub": str(user.id), "email": user.email, "iat": int(now.timestamp()),
+               "exp": int((now + timedelta(days=days or settings.session_days)).timestamp())}
+    if password_version is not None:
+        payload["pv"] = int(password_version)      # версия пароля гостя, см. current_user
     return jwt.encode(payload, settings.session_secret, algorithm="HS256")
 
 
@@ -52,6 +55,15 @@ def current_user(
         u = db.get(models.User, uid)
         if not u:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
+        # v0.10: гость работает, пока он в списке гостей. Убрали из списка — сессия перестаёт действовать сразу.
+        # v0.10.1: смена пароля гасит прежние сессии — сессия старше password_set_at не принимается.
+        from .guests import get_guest, is_work_email
+        if not is_work_email(u.email) and settings.allowed_domains:
+            g = get_guest(db, u.email)
+            if g is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "access revoked")
+            if int(data.get("pv") or 0) != int(g.password_version or 0):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "password changed")
         return u
     if token and secrets.compare_digest(token.encode(), settings.api_token.encode()):  # Н1: сравнение за постоянное время
         return owner_user(db)

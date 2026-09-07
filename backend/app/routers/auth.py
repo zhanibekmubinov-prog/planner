@@ -5,15 +5,18 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .. import models, schemas
+from .. import guests, models, notify, schemas
 from ..auth import current_user, issue_session, require_admin
 from ..config import settings
 from ..db import get_db
 
+import logging
+
+_log = logging.getLogger("auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
 _states: dict[str, float] = {}          # anti-CSRF state → время создания (живёт 10 минут)
 _jwks: dict = {"keys": None, "exp": 0.0}
@@ -30,8 +33,9 @@ def _cleanup_states() -> None:
 
 @router.get("/config")
 def config():
-    """Фронт спрашивает, включён ли вход через Microsoft."""
-    return {"microsoft": settings.ms_login_ready, "frontend_url": settings.frontend_url}
+    """Фронт спрашивает, какие способы входа включены."""
+    return {"microsoft": settings.ms_login_ready, "guest_login": settings.graph_ready,
+            "frontend_url": settings.frontend_url}
 
 
 @router.get("/login")
@@ -124,6 +128,116 @@ async def callback(code: str = Query(...), state: str = Query(...), db: Session 
     token = issue_session(user)
     front = (settings.frontend_url or "/").rstrip("/")
     return RedirectResponse(f"{front}/#token={token}")
+
+
+# ---------------- вход внешнего участника по одноразовой ссылке (v0.10) ----------------
+
+@router.post("/guest/request", status_code=202)
+async def guest_request(data: schemas.GuestLoginIn, request: Request, db: Session = Depends(get_db)):
+    """Отправить гостю ссылку для входа.
+
+    Ответ всегда одинаковый — иначе по нему можно перебором узнать список гостей.
+    Ссылку получают только адреса из списка гостей; сотруднику @<рабочий домен> этот путь закрыт.
+    """
+    email = guests.norm_email(data.email)
+    answer = {"sent": True, "message": "Если этот адрес в списке гостей, ссылка для входа отправлена на почту."}
+    if not schemas.EMAIL_RE.match(email) or guests.is_work_email(email):
+        return answer
+    ip = (request.client.host if request.client else "") or ""
+    if guests.rate_limited(f"email:{email}", f"ip:{ip}"):
+        _log.warning("guest login: слишком часто (%s, %s)", email, ip)
+        return answer
+    g = guests.get_guest(db, email)
+    if g is None:
+        _log.info("guest login: адреса %s нет в списке гостей", email)
+        return answer
+    raw = guests.create_login_token(db, email)
+    front = (settings.frontend_url or "").rstrip("/")
+    subject, html = guests.login_email(f"{front}/#guest={raw}", g.name)
+    try:
+        await notify.send_email(subject, html, to=email)
+        _log.info("guest login: ссылка отправлена %s", email)
+    except notify.NotifyError as e:
+        _log.warning("guest login: письмо не ушло (%s): %s", email, e)
+    return answer
+
+
+@router.post("/guest/verify")
+def guest_verify(data: schemas.GuestVerifyIn, db: Session = Depends(get_db)):
+    """Обменять одноразовую ссылку на сессию. Токен гасится, сессия короче обычной."""
+    email = guests.consume_login_token(db, data.token)
+    if not email:
+        raise HTTPException(400, "Ссылка устарела или уже использована — запросите новую")
+    g = guests.get_guest(db, email)
+    if g is None:
+        raise HTTPException(403, "Доступ закрыт")
+    user = db.scalar(select(models.User).where(models.User.email == email))
+    if not user:
+        user = models.User(email=email, name=g.name, is_admin=False)
+        db.add(user); db.flush()
+    user.name = user.name or g.name
+    user.last_login_at = datetime.now(timezone.utc)
+    person = db.scalar(select(models.Person).where(models.Person.user_id == user.id)) or \
+             db.scalar(select(models.Person).where(models.Person.email == email))
+    if not person:
+        person = models.Person(name=user.name, email=email); db.add(person)
+    person.user_id = user.id
+    db.commit()
+    _log.info("guest login: вошёл по ссылке %s", email)
+    # По ссылке гость приходит на первый вход или на сброс — в обоих случаях просим задать пароль.
+    return {"token": issue_session(user, days=guests.GUEST_SESSION_DAYS, password_version=g.password_version),
+            "guest": True, "need_password": True, "has_password": bool(g.password_hash)}
+
+
+@router.post("/guest/password")
+async def guest_set_password(data: schemas.GuestPasswordIn, user: models.User = Depends(current_user),
+                             db: Session = Depends(get_db)):
+    """Гость задаёт себе пароль. Прежние его сессии после этого недействительны, поэтому выдаём новую."""
+    g = guests.get_guest(db, user.email)
+    if g is None:
+        raise HTTPException(403, "Доступ закрыт")
+    problem = guests.password_problem(data.password, user.email)
+    if problem:
+        raise HTTPException(400, f"Пароль не подходит: {problem}")
+    first = g.password_hash is None
+    guests.set_password(db, g, data.password)
+    _log.info("guest password: %s %s", user.email, "задан впервые" if first else "изменён")
+    await guests.notify_admin_password_change(g, first=first)
+    return {"token": issue_session(user, days=guests.GUEST_SESSION_DAYS, password_version=g.password_version),
+            "guest": True, "need_password": False}
+
+
+@router.post("/guest/login")
+def guest_login(data: schemas.GuestPasswordLoginIn, request: Request, db: Session = Depends(get_db)):
+    """Обычный вход гостя: почта и пароль."""
+    email = guests.norm_email(data.email)
+    ip = (request.client.host if request.client else "") or ""
+    if guests.login_attempt_blocked(email, ip):
+        raise HTTPException(429, "Слишком много попыток. Подождите 15 минут или запросите ссылку на почту.")
+    g = guests.get_guest(db, email)
+    if g is None or not g.password_hash:
+        guests.login_attempt_failed(email, ip)
+        # Одинаковый текст и для «нет такого гостя», и для «пароль не задан» — чтобы список гостей не вычислялся
+        raise HTTPException(401, "Почта или пароль не подходят. Если входите впервые — запросите ссылку на почту.")
+    if not guests.verify_password(data.password, g.password_hash):
+        guests.login_attempt_failed(email, ip)
+        _log.warning("guest login: неверный пароль %s (%s)", email, ip)
+        raise HTTPException(401, "Почта или пароль не подходят. Если входите впервые — запросите ссылку на почту.")
+    guests.login_attempt_ok(email, ip)
+    user = db.scalar(select(models.User).where(models.User.email == email))
+    if not user:
+        user = models.User(email=email, name=g.name, is_admin=False)
+        db.add(user); db.flush()
+    user.last_login_at = datetime.now(timezone.utc)
+    person = db.scalar(select(models.Person).where(models.Person.user_id == user.id)) or \
+             db.scalar(select(models.Person).where(models.Person.email == email))
+    if not person:
+        person = models.Person(name=user.name, email=email); db.add(person)
+    person.user_id = user.id
+    db.commit()
+    _log.info("guest login: вошёл паролем %s", email)
+    return {"token": issue_session(user, days=guests.GUEST_SESSION_DAYS, password_version=g.password_version),
+            "guest": True, "need_password": False}
 
 
 @router.get("/me", response_model=schemas.UserOut)

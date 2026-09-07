@@ -10,7 +10,7 @@ export type View =
   | { kind: "board"; directionId: number | null; projectId?: number | "none"; orphans?: boolean }    // канбан: все / направление / проект / без проекта / без направления
   | { kind: "people" } | { kind: "tools" } | { kind: "shared" }
   | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number } | { kind: "inbox" }
-  | { kind: "archive" } | { kind: "trash" };
+  | { kind: "archive" } | { kind: "trash" } | { kind: "guests" };
 
 type Props = {
   directions: Direction[]; projects: Project[]; tasks: Task[]; view: View; mindmapCount: number; inboxCount: number; sharedCount: number;
@@ -65,7 +65,7 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
 
   return (
     <aside className="side">
-      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.9</span></div>
+      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.10</span></div>
       {me && <UserChip me={me} onClick={onProfile} />}
 
       <div className="side-list side-top">
@@ -186,6 +186,12 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
           <span className="name">Архив</span>
           <span className="count">{archived || ""}</span>
         </button>
+        {me?.is_admin && (
+          <button className={`side-item aux ${view.kind === "guests" ? "active" : ""}`} onClick={() => onView({ kind: "guests" })} title="Внешние участники: подрядчики и партнёры, которых вы пригласили">
+            <span className="swatch hollow-swatch" />
+            <span className="name">Гости</span>
+          </button>
+        )}
         <button className={`side-item aux ${view.kind === "trash" ? "active" : ""}`} onClick={() => onView({ kind: "trash" })} title="Удалённое — можно вернуть в течение 30 дней">
           <span className="swatch trash-swatch" />
           <span className="name">Корзина</span>

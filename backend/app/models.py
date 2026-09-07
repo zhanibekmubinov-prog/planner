@@ -267,3 +267,37 @@ class McpToken(Base):
     revoked: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Guest(Base):
+    """Внешний участник, приглашённый админом: почта не из ALLOWED_EMAIL_DOMAINS.
+
+    v0.10: гость входит не через Microsoft, а по одноразовой ссылке на эту почту.
+    Запись в этой таблице = разрешение входить. Удалили запись — доступ закрыт сразу,
+    в том числе для уже открытых сессий (проверка в auth.current_user).
+    """
+    __tablename__ = "guests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    note: Mapped[str | None] = mapped_column(Text)                       # от кого/зачем: «подрядчик по ЛВД»
+    invited_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # v0.10.1: пароль гостя. В базе только scrypt-хеш с солью; сам пароль не хранится и не восстанавливается.
+    # password_set_at заодно гасит прежние сессии: сессия, выданная раньше смены пароля, больше не действует.
+    password_hash: Mapped[str | None] = mapped_column(String(300))
+    password_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Номер версии пароля попадает в сессию гостя: сменили пароль — все прежние сессии сразу недействительны
+    # (сравнение по номеру, а не по времени: не зависит от точности часов и работает в ту же секунду).
+    password_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class GuestLoginToken(Base):
+    """Одноразовая ссылка входа гостя. В базе только SHA-256 хеш; живёт 15 минут."""
+    __tablename__ = "guest_login_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(200), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

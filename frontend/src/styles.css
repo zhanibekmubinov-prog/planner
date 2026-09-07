@@ -725,6 +725,11 @@ a { color: var(--accent); }
 .shared-who .hint { font-weight: 400; }
 .avatar-sm { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
 .page .table .trow.shared-row { grid-template-columns: minmax(200px, 1.6fr) auto auto auto auto; }
+/* Гости (v0.10): имя · почта · пароль · последний вход · действия */
+.page .table .trow.guest-row { grid-template-columns: minmax(170px, 1.1fr) minmax(220px, 1.3fr) 90px 130px auto; }
+.page .table .trow.guest-row > span { min-width: 0; overflow-wrap: anywhere; }
+.page .table .trow.guest-row .row { justify-content: flex-end; flex-wrap: nowrap; }
+
 [data-theme="journal"] .shared-who { font-family: var(--display); font-size: 17px; }
 
 /* ---- Карточка задачи: только просмотр ---- */
@@ -894,3 +899,8 @@ button.arch-name:hover { color: var(--accent); cursor: pointer; }
   .side-item .more { display: inline-flex; align-items: center; justify-content: center; }
   .side-item.dir, .side-item.proj { grid-template-columns: 10px auto auto auto; }
 }
+
+/* Вход внешнего участника по ссылке на почту (v0.10) */
+.login-guest { display: grid; gap: 8px; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 2px; background: var(--surface-2); }
+.login-guest .row { gap: 8px; }
+.login-guest .input { min-width: 0; }

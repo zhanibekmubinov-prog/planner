@@ -18,24 +18,31 @@ people = APIRouter(prefix="/people", tags=["people"])
 def people_list(db: Session = Depends(get_db), _: models.User = Depends(current_user)):
     return db.scalars(select(models.Person).order_by(models.Person.name)).all()
 
-def check_person_email_domain(email: str | None) -> None:
-    """Почта человека — только разрешённых доменов (ALLOWED_EMAIL_DOMAINS), если они заданы."""
-    if email and settings.allowed_domains and email.split("@")[-1].lower() not in settings.allowed_domains:
-        raise HTTPException(400, f"Почта человека должна быть в домене @{', @'.join(settings.allowed_domains)}")
+def check_person_email_domain(email: str | None, db: Session | None = None) -> None:
+    """Почта человека — рабочий домен (ALLOWED_EMAIL_DOMAINS) либо адрес из списка гостей (v0.10)."""
+    if not email or not settings.allowed_domains:
+        return
+    from ..guests import allowed_hint, email_allowed, is_work_email
+    if is_work_email(email):
+        return
+    if db is not None and email_allowed(db, email):
+        return
+    hint = allowed_hint(db) if db is not None else f"почта @{', @'.join(settings.allowed_domains)}"
+    raise HTTPException(400, f"Почта человека: {hint}")
 
 
 @people.post("", response_model=schemas.PersonOut, status_code=201)
 def people_create(data: schemas.PersonIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
     """Добавить человека может любой (нужно для поручений). К чужому аккаунту запись НЕ привязывается —
     связь user_id появляется только при входе самого человека (/auth/callback), Н6/С10."""
-    check_person_email_domain(data.email)
+    check_person_email_domain(data.email, db)
     obj = models.Person(**data.model_dump())
     db.add(obj); db.flush(); log(db, obj, "create", {"by": user.id}); db.commit(); return obj
 
 @people.put("/{id}", response_model=schemas.PersonOut)
 def people_update(id: int, data: schemas.PersonIn, db: Session = Depends(get_db), _: models.User = Depends(require_admin)):
     """Править справочник — только админ (решение владельца 2026-09-04)."""
-    check_person_email_domain(data.email)
+    check_person_email_domain(data.email, db)
     obj = get_or_404(db, models.Person, id)
     for k, v in data.model_dump().items(): setattr(obj, k, v)
     db.commit(); return obj

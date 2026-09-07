@@ -995,8 +995,8 @@ def t_add_reminder(db, user, a):
     return {"task": t.title, "reminder": {"id": r.id, "fire_at": _local(r.fire_at), "channels": r.channels, "recipient": r.recipient, "message": r.message}}
 
 
-def _work_email(a: dict, key: str = "email") -> str | None:
-    """Почта: одна строка, формат user@domain, домен из ALLOWED_EMAIL_DOMAINS (если задан) — как в share_access (В2)."""
+def _work_email(a: dict, key: str = "email", db=None) -> str | None:
+    """Почта: одна строка, user@domain; рабочий домен из ALLOWED_EMAIL_DOMAINS либо адрес из списка гостей (v0.10)."""
     v = a.get(key)
     if v in (None, ""):
         return None
@@ -1008,9 +1008,12 @@ def _work_email(a: dict, key: str = "email") -> str | None:
     if len(email) > LEN_NAME:
         raise ToolError(f"{key}: слишком длинно")
     domain = email.split("@")[1]
-    if settings.allowed_domains and domain not in settings.allowed_domains:
-        raise ToolError(f"{key}: разрешена только рабочая почта @{', @'.join(settings.allowed_domains)} (получено @{domain})",
-                        hint="Внешние адреса в справочник не добавляются; поручать можно только сотрудникам.")
+    # v0.10: рабочий домен либо адрес из списка гостей (гостей добавляет админ в разделе «Гости»)
+    from .guests import email_allowed, is_work_email
+    ok = is_work_email(email) if db is None else email_allowed(db, email)
+    if settings.allowed_domains and not ok:
+        raise ToolError(f"{key}: разрешена рабочая почта @{', @'.join(settings.allowed_domains)} или адрес из списка гостей (получено @{domain})",
+                        hint="Внешнего человека сначала добавляет администратор в разделе «Гости» — потом его можно указывать здесь.")
     return email
 
 
@@ -1019,7 +1022,7 @@ def t_create_person(db, user, a):
     dup = [p for p in all_people(db) if _norm(p.name) == _norm(name)]
     if dup:
         raise ToolError(f"«{dup[0].name}» уже есть в справочнике (id {dup[0].id})")
-    email = _work_email(a)
+    email = _work_email(a, db=db)
     if email and (same := db.scalar(select(models.Person).where(models.Person.email == email))):
         raise ToolError(f"Почта {email} уже у «{same.name}» (id {same.id})", hint="Используйте существующую запись.")
     tg = _str(a, "telegram_chat_id", 64)

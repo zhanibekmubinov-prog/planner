@@ -1,6 +1,6 @@
 // Вход через Microsoft, чип пользователя в панели и окно профиля.
 import { useEffect, useState } from "react";
-import { api, API_BASE, getSession, post, put, setSession, User } from "./api";
+import { api, API_BASE, errorText, getSession, post, put, setSession, User } from "./api";
 import { Store } from "./store";
 
 /** Забирает #token=… после возврата от Microsoft. Возвращает true, если сессия есть. */
@@ -10,9 +10,54 @@ export function pickUpSession(): boolean {
   return !!getSession() || !!import.meta.env.VITE_API_TOKEN;
 }
 
+type LoginCfg = { microsoft: boolean; guest_login?: boolean };
+type GuestSession = { token: string; need_password?: boolean; has_password?: boolean };
+
 export function LoginScreen({ error }: { error?: string | null }) {
-  const [cfg, setCfg] = useState<{ microsoft: boolean } | null>(null);
-  useEffect(() => { api<{ microsoft: boolean }>("/auth/config").then(setCfg).catch(() => setCfg({ microsoft: false })); }, []);
+  const [cfg, setCfg] = useState<LoginCfg | null>(null);
+  const [guest, setGuest] = useState(false);              // открыт блок входа гостя
+  const [busy, setBusy] = useState(!!guestTokenFromHash());
+  const [msg, setMsg] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [setup, setSetup] = useState<GuestSession | null>(null);   // пришёл по ссылке — задаёт пароль
+
+  useEffect(() => { api<LoginCfg>("/auth/config").then(setCfg).catch(() => setCfg({ microsoft: false })); }, []);
+
+  // Гость пришёл по ссылке из письма: обменять её на сессию и попросить задать пароль.
+  useEffect(() => {
+    const token = guestTokenFromHash();
+    if (!token) return;
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    post<GuestSession>("/auth/guest/verify", { token })
+      .then((r) => {
+        setBusy(false);
+        if (r.need_password) setSetup(r);
+        else { setSession(r.token); window.location.reload(); }
+      })
+      .catch((e) => { setBusy(false); setGuest(true); setMsg(cleanError(e)); });
+  }, []);
+
+  async function requestLink() {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await post<{ message: string }>("/auth/guest/request", { email: email.trim().toLowerCase() });
+      setMsg(r.message);
+    } catch (e) { setMsg(cleanError(e)); } finally { setBusy(false); }
+  }
+
+  async function loginWithPassword() {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await post<GuestSession>("/auth/guest/login", { email: email.trim().toLowerCase(), password });
+      setSession(r.token); window.location.reload();
+    } catch (e) { setMsg(cleanError(e)); } finally { setBusy(false); }
+  }
+
+  const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
+
+  if (setup) return <GuestPasswordScreen session={setup} />;
+
   return (
     <div className="login">
       <div className="login-card">
@@ -26,11 +71,95 @@ export function LoginScreen({ error }: { error?: string | null }) {
         ) : (
           <p className="hint">Вход через Microsoft не настроен на сервере (переменные MS_REDIRECT_URI и др.).</p>
         )}
+
+        {cfg?.guest_login && (guest ? (
+          <div className="login-guest">
+            <div className="field">
+              <label htmlFor="guest-email">Почта</label>
+              <input id="guest-email" className="input" type="email" value={email} autoFocus
+                     onChange={(e) => setEmail(e.target.value)} placeholder="partner@podryadchik.kz" />
+            </div>
+            <div className="field">
+              <label htmlFor="guest-pwd">Пароль</label>
+              <input id="guest-pwd" className="input" type="password" value={password}
+                     onChange={(e) => setPassword(e.target.value)}
+                     onKeyDown={(e) => { if (e.key === "Enter" && emailOk && password && !busy) loginWithPassword(); }} />
+            </div>
+            <button className="btn primary" onClick={loginWithPassword} disabled={busy || !emailOk || !password}>Войти</button>
+            <button className="btn ghost sm" onClick={requestLink} disabled={busy || !emailOk}>
+              Первый вход или забыли пароль — прислать ссылку на почту
+            </button>
+            <span className="hint">Ссылка действует 15 минут и срабатывает один раз; по ней вы зададите пароль. Сотрудникам CIS этот вход не нужен — входите через Microsoft.</span>
+          </div>
+        ) : (
+          <button className="btn ghost sm" onClick={() => setGuest(true)}>Я внешний участник — вход по паролю</button>
+        ))}
+
+        {msg && <p className="hint" style={{ color: "var(--text)" }}>{msg}</p>}
         {error && <p className="login-error">{error}</p>}
         <p className="hint login-foot">Caspian Integrated Services · доступ по учётным записям компании</p>
       </div>
     </div>
   );
+}
+
+/** Экран «придумайте пароль» — показывается после перехода по ссылке из письма. */
+function GuestPasswordScreen({ session }: { session: GuestSession }) {
+  const [p1, setP1] = useState("");
+  const [p2, setP2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const short = p1.trim().length < 10;
+  const same = p1 === p2;
+
+  async function save() {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api<GuestSession>("/auth/guest/password", {
+        method: "POST", body: JSON.stringify({ password: p1 }),
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      setSession(r.token); window.location.reload();
+    } catch (e) { setMsg(cleanError(e)); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="login">
+      <div className="login-card">
+        <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1></div>
+        <p className="login-lead">{session.has_password ? "Задайте новый пароль" : "Придумайте пароль"} — дальше вы будете входить почтой и паролем.</p>
+        <div className="login-guest">
+          <div className="field">
+            <label htmlFor="p1">Пароль</label>
+            <input id="p1" className="input" type="password" value={p1} autoFocus onChange={(e) => setP1(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="p2">Ещё раз</label>
+            <input id="p2" className="input" type="password" value={p2} onChange={(e) => setP2(e.target.value)}
+                   onKeyDown={(e) => { if (e.key === "Enter" && !short && same && !busy) save(); }} />
+          </div>
+          <button className="btn primary" onClick={save} disabled={busy || short || !same}>Сохранить и войти</button>
+          <span className="hint">
+            Не короче 10 символов, не совпадает с почтой. {p1 && !same ? "Пароли не совпадают." : ""}
+            {" "}Пароль знаете только вы: в планнере хранится лишь его необратимый отпечаток.
+          </span>
+        </div>
+        {msg && <p className="login-error">{msg}</p>}
+        <p className="hint login-foot">Если ссылка устарела — запросите новую на экране входа.</p>
+      </div>
+    </div>
+  );
+}
+
+/** Текст ошибки без служебных приставок вида «Сервер отказал: 400». */
+function cleanError(e: unknown): string {
+  return errorText(e).replace(/^Сервер отказал:\s*/i, "").replace(/^\d+\s+/, "");
+}
+
+/** Токен из ссылки письма: /#guest=… */
+function guestTokenFromHash(): string | null {
+  const m = window.location.hash.match(/guest=([^&]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
 export function UserChip({ me, onClick }: { me: User; onClick: () => void }) {

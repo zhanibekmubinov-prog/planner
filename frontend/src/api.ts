@@ -128,6 +128,9 @@ export const toIn = (t: Task, projectId?: number | null): TaskIn => ({
 });
 
 export type User = { id: number; email: string; name: string; is_admin: boolean; telegram_chat_id?: string | null; digest_enabled: boolean };
+// Гость (v0.10) — внешний участник, которого пригласил админ; входит по одноразовой ссылке на почту
+export type Guest = { id: number; email: string; name: string; note?: string | null; created_at: string; invited_by_id?: number | null; last_login_at?: string | null; has_password?: boolean; password_set_at?: string | null };
+export type GuestIn = { email: string; name: string; note?: string | null };
 export type UserBrief = { id: number; name: string; email: string };
 
 export type Person = { id: number; name: string; telegram_chat_id?: string | null; email?: string | null; note?: string | null; user_id?: number | null };

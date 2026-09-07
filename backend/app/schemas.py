@@ -41,6 +41,51 @@ class UserOut(ORM):
     telegram_chat_id: str | None = None
     digest_enabled: bool = True
 
+class GuestIn(BaseModel):
+    """Приглашение внешнего участника (v0.10). Добавляет только админ."""
+    email: Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=200)]
+    name: Name200
+    note: str | None = Field(None, max_length=500)
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        v = v.lower()
+        if not EMAIL_RE.match(v):
+            raise ValueError("укажите адрес вида имя@домен")
+        return v
+
+
+class GuestOut(ORM):
+    id: int
+    email: str
+    name: str
+    note: str | None = None
+    created_at: datetime
+    invited_by_id: int | None = None
+    last_login_at: datetime | None = None      # из учётной записи гостя, если он уже входил
+    has_password: bool = False                 # задал ли он себе пароль (v0.10.1)
+    password_set_at: datetime | None = None
+
+
+class GuestLoginIn(BaseModel):
+    email: Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=200)]
+
+
+class GuestVerifyIn(BaseModel):
+    token: Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=200)]
+
+
+class GuestPasswordIn(BaseModel):
+    """Гость задаёт себе пароль (v0.10.1). Требования проверяет guests.password_problem."""
+    password: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+
+class GuestPasswordLoginIn(BaseModel):
+    email: Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=200)]
+    password: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+
 class UserBrief(ORM):
     id: int
     name: str

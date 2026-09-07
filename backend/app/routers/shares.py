@@ -90,9 +90,10 @@ def find_or_invite_user(db: Session, email: str) -> models.User:
     email = email.strip().lower()
     if not schemas.EMAIL_RE.match(email):   # Н2: «@cis.kz» без локальной части создавал пользователя с пустым именем
         raise HTTPException(400, "Укажите рабочую почту, например n.abilkhanov@cis.kz")
-    domain = email.split("@")[-1]
-    if settings.allowed_domains and domain not in settings.allowed_domains:
-        raise HTTPException(400, f"Можно приглашать только сотрудников с почтой @{', @'.join(settings.allowed_domains)}")
+    # v0.10: сотрудник по домену либо гость, которого добавил админ
+    from ..guests import allowed_hint, email_allowed
+    if not email_allowed(db, email):
+        raise HTTPException(400, f"Можно приглашать только своих: {allowed_hint(db)}")
     u = db.scalar(select(models.User).where(models.User.email == email))
     if not u:
         local = email.split("@")[0]

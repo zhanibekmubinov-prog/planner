@@ -441,6 +441,11 @@ def housekeeping(db: Session, now: datetime) -> None:
         log.info("oauth cleanup: %s", cleanup_oauth(db, now))
     except Exception:  # noqa: BLE001
         db.rollback(); log.exception("oauth cleanup failed")
+    try:
+        from .guests import purge_login_tokens
+        log.info("guest links purge: %s", purge_login_tokens(db, now))
+    except Exception:  # noqa: BLE001
+        db.rollback(); log.exception("guest links purge failed")
 
 
 async def tick(db: Session) -> None:

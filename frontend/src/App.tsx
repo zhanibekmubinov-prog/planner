@@ -20,6 +20,7 @@ import { useStore } from "./store";
 import TaskPanel from "./TaskPanel";
 import { useToast } from "./toast";
 import TrashPage from "./Trash";
+import GuestsPage from "./Guests";
 import { applyUpdate, useUpdateAvailable } from "./update";
 import "./styles.css";
 
@@ -145,6 +146,8 @@ function Workspace() {
             onRestoreProject={restoreProject} />
         ) : view.kind === "archive" ? (
           <ArchivePage store={store} onOpenDirection={(id) => setView({ kind: "direction", directionId: id })} onOpenProject={(p) => setView({ kind: "board", directionId: p.direction_id, projectId: p.id })} />
+        ) : view.kind === "guests" ? (
+          <GuestsPage store={store} />
         ) : view.kind === "trash" ? (
           <TrashPage store={store} />
         ) : view.kind === "shared" ? (

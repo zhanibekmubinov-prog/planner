@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-09-07 · сессия 10 · Cowork (cloud) — v0.9: тот же MCP-коннектор работает и в ChatGPT
+
+**Повод** — владелец: «хочу такой же коннектор для чата ГПТ, у некоторых подписка на ChatGPT; можно ли голосом». Отдельный чат в тот же день делал Telegram-бота (сессия 9) — файлы не пересекаются.
+
+**Разбор перед работой (что выяснено, а не предположено)**
+- Писать второй сервер не нужно: MCP — открытый стандарт, наш `/mcp` уже remote HTTPS с OAuth. В ChatGPT подключается через **Settings → Security and login → Developer mode → +**; планы Plus / Pro / Team / Enterprise / Edu, на Free нельзя.
+- **Голосом из ChatGPT планнером управлять нельзя** — голосовой режим ChatGPT не поддерживает apps/коннекторы (справка OpenAI, «Apps in ChatGPT»). Только текстом; голос остаётся у Claude (мобильное приложение). Голос вне Claude — отдельная задача (Telegram-бот с голосовыми либо микрофон в PWA), владелец её отложил.
+- Прочие ограничения ChatGPT: инструменты не работают в расшаренных беседах, есть per-tool rate limits, админ Team/Enterprise может отключить Developer mode на всю организацию.
+
+**Ошибка, с которой всё упало (до окна входа)**
+`Dynamic client registration failed: registration endpoint returned 400 (invalid_redirect_uri)` — наш `/oauth/register` пускал только хосты Claude, а ChatGPT приходит со своим `redirect_uri`.
+
+**Решение владельца:** править так, чтобы Claude продолжал работать — один сервер на двух клиентов.
+
+**Сделано (миграция не нужна, схема не менялась)**
+- `backend/app/routers/mcp_oauth.py` — в `REDIRECT_HOST_ALLOWLIST` добавлены `chatgpt.com` и `openai.com` рядом с `claude.ai`/`claude.com`/`anthropic.com`; обновлены docstring и текст ошибки `invalid_redirect_uri`. Правка **только добавлением**: поток Claude, его `client_id` и уже выданные токены не тронуты; совпадение по хостам суффиксное, поэтому `chatgpt.com.evil.com` по-прежнему отклоняется.
+- `backend/tests/test_adversarial_mcp.py` — `test_v09_allowed_clients_can_register` (claude.ai, claude.com, chatgpt.com, chat.openai.com, http://localhost — все 201) и `test_v09_lookalike_hosts_still_rejected` (похожие домены — 400).
+- `docs/MCP_CONNECTOR.md` — раздел «v0.9 — тот же коннектор в ChatGPT»: шаги подключения, планы, три ограничения, что именно правилось, текст исходной ошибки.
+- **Тесты:** `python -m pytest tests -q` → **155 passed** (было 147 + 8 новых). Фронт не затронут, `npm run build` не нужен. Прогон вместе с Telegram-ботом сессии 9 — 172 passed.
+- Закоммичено и запушено владельцем: `a714f19`.
+
+**Осталось** — владелец: после зелёного деплоя backend добавить в ChatGPT `https://backend-production-830f1.up.railway.app/mcp` и пройти OAuth (на странице согласия должен быть показан адрес `chatgpt.com`). Если вылезет другая ошибка на этапе регистрации или обмена кода — прислать текст. Возможный следующий камень: ChatGPT может присылать параметр `resource` (RFC 8707) — сейчас мы его не требуем и не проверяем.
+
+---
+
 ## 2026-09-07 · сессия 9 · Cowork (desktop) — v0.9: бот сам показывает chat id и привязывает Telegram
 
 **Повод** — владелец: «нельзя ли сделать, чтобы у бота была функция показывать тг chat id?» Раньше сотрудник искал id через @userinfobot и вписывал руками. Имя бота: **@cisplannerbot**.
@@ -20,7 +45,9 @@
 - `docs/TELEGRAM.md` — таблица команд, как устроено, настройка (переменные + один URL `setWebhook`), диагностика (`getWebhookInfo`, логи, «не нажал Запустить»).
 - **Тесты:** `backend/tests/test_v09_telegram.py` — 17 тестов (секрет, привязка, Person, «один чат = один человек», плохой код, код несуществующего пользователя, `/start` без кода, уже привязан, `/id` в группе, `/stop` дважды, мусорный текст, не-сообщение, `/link` + авторизация + без username, регрессия ручного ввода). Прогон: pytest **164 passed**, vitest **61 passed**, `npm run build` чисто.
 
-**Осталось** — владелец: распаковать архив в репо, задать в Railway `TELEGRAM_BOT_USERNAME=cisplannerbot` и `TELEGRAM_WEBHOOK_SECRET`, один раз открыть URL `setWebhook`, прогнать тесты, закоммитить. Затем проверить: боту `/id` → отвечает; в профиле «Подключить Telegram» → «Запустить» → «Готово, Имя!». После этого в письме коллегам шаг про @userinfobot больше не нужен.
+**Совместимость с параллельной сессией:** в тот же день другой чат добавил ChatGPT в `REDIRECT_HOST_ALLOWLIST` (`routers/mcp_oauth.py`, `test_adversarial_mcp.py`, `docs/MCP_CONNECTOR.md`) — файлы не пересекаются с моими. Прогон обеих правок вместе: pytest **172 passed**, `test_mcp.py` и `test_v06.py` — ALL OK. Версия одна на две фичи: v0.9 = Telegram-бот + коннектор в ChatGPT.
+
+**Осталось** — владелец: файлы записаны прямо в папку (архив не нужен), задать в Railway `TELEGRAM_BOT_USERNAME=cisplannerbot` и `TELEGRAM_WEBHOOK_SECRET`, один раз открыть URL `setWebhook`, прогнать тесты, закоммитить. Затем проверить: боту `/id` → отвечает; в профиле «Подключить Telegram» → «Запустить» → «Готово, Имя!». После этого в письме коллегам шаг про @userinfobot больше не нужен.
 
 ---
 

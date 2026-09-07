@@ -18,7 +18,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     stop = asyncio.Event()
     task = asyncio.create_task(run_forever(stop)) if settings.scheduler_enabled else None
+    menu = asyncio.create_task(telegram.sync_commands())   # меню команд у бота: ставится само при старте
     yield
+    menu.cancel()
     stop.set()
     if task:
         await task

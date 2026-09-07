@@ -37,6 +37,30 @@ HELP = (
     "Задачи ставятся в планнере или голосом через Claude — сюда писать команды не нужно."
 )
 
+# Меню команд (синяя кнопка «Меню» в Telegram). Ставится само при старте бэкенда — в BotFather вручную ничего вбивать не нужно.
+COMMANDS = [
+    {"command": "start", "description": "подключить этот чат к планнеру"},
+    {"command": "id", "description": "показать мой chat id"},
+    {"command": "stop", "description": "не присылать напоминания сюда"},
+    {"command": "help", "description": "что умеет бот"},
+]
+
+
+async def sync_commands() -> None:
+    """Отправить меню команд в Telegram. Без токена бота (локально, тесты) — тихо ничего не делает."""
+    if not settings.telegram_bot_token:
+        return
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/setMyCommands"
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(url, json={"commands": COMMANDS})
+        if r.status_code >= 300:
+            _log.warning("setMyCommands %s: %s", r.status_code, r.text[:200])
+        else:
+            _log.info("telegram: меню команд обновлено (%d команд)", len(COMMANDS))
+    except httpx.HTTPError as e:
+        _log.warning("setMyCommands: %s", e)
+
 
 async def _reply(chat_id: str, text: str) -> None:
     """Ответ в чат. Без токена бота (локально и в тестах) молча ничего не делает."""

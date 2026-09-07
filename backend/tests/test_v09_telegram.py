@@ -3,6 +3,10 @@
 Проверяем вебхук (секрет, /start с кодом, /start без кода, /id, /stop, мусор)
 и эндпоинт /api/telegram/link для кнопки «Подключить Telegram» в профиле.
 """
+import asyncio
+import re
+
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -147,3 +151,47 @@ def test_ok_profile_still_accepts_manual_chat_id(client, nur, bot):
     """Регрессия: ручной ввод chat id в профиле никуда не делся."""
     j = ok(client.put("/api/auth/me", json={"name": "Нурлан", "telegram_chat_id": "999", "digest_enabled": True}, headers=nur.h))
     assert j["telegram_chat_id"] == "999"
+
+# ---------- меню команд (синяя кнопка «Меню» в Telegram) ----------
+
+def test_v09_commands_menu_is_valid():
+    """Telegram требует: только строчные латинские буквы/цифры/подчёркивание, ≤32 знака, описание ≤256."""
+    names = [c["command"] for c in tg.COMMANDS]
+    assert names == ["start", "id", "stop", "help"]
+    for c in tg.COMMANDS:
+        assert re.fullmatch(r"[a-z0-9_]{1,32}", c["command"]), c
+        assert 0 < len(c["description"]) <= 256
+
+
+def test_v09_sync_commands_without_token_does_nothing(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", "")
+    monkeypatch.setattr(tg.httpx, "AsyncClient", _Boom)      # если полезет в сеть — упадёт
+    asyncio.run(tg.sync_commands())
+
+
+def test_v09_sync_commands_posts_menu(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(settings, "telegram_bot_token", "12345:abc")
+    monkeypatch.setattr(tg.httpx, "AsyncClient", lambda **kw: _Client(calls))
+    asyncio.run(tg.sync_commands())
+    url, payload = calls[0]
+    assert url.endswith("/bot12345:abc/setMyCommands")
+    assert payload["commands"] == tg.COMMANDS
+
+
+class _Boom:
+    def __init__(self, **kw): raise AssertionError("сети быть не должно")
+
+
+class _Client:
+    """Заглушка httpx.AsyncClient: записывает вызовы, отвечает 200."""
+
+    def __init__(self, calls): self.calls = calls
+
+    async def __aenter__(self): return self
+
+    async def __aexit__(self, *a): return False
+
+    async def post(self, url, json=None):
+        self.calls.append((url, json))
+        return httpx.Response(200, json={"ok": True})

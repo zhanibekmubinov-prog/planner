@@ -30,6 +30,8 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""              # от @BotFather
     telegram_chat_id: str = ""                # ваш chat id (владелец планнера)
+    telegram_bot_username: str = ""           # имя бота без @, напр. cisplannerbot — для кнопки «Подключить Telegram»
+    telegram_webhook_secret: str = ""         # секрет вебхука бота (задаётся в setWebhook); пусто = вебхук выключен
 
     # Microsoft Graph — приложение в Azure AD с правами Mail.Send и Calendars.ReadWrite (application)
     ms_tenant_id: str = ""

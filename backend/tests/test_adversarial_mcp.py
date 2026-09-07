@@ -18,7 +18,8 @@ from sqlalchemy import select
 from app import models
 from tests.conftest import API_TOKEN, NUR_EMAIL, AIDA_EMAIL, count, link_person, ok
 
-# v0.8: redirect_uri принимается только на разрешённые хосты (claude.ai, claude.com, anthropic.com, localhost) —
+# v0.8: redirect_uri принимается только на разрешённые хосты (claude.ai, claude.com, anthropic.com, localhost;
+# с v0.9 также chatgpt.com и openai.com) —
 # тесты регистрируют клиентов на claude.ai; лимит регистраций (в памяти процесса) сбрасывается перед каждым тестом.
 CB = "https://claude.ai/api/mcp/auth_callback"
 
@@ -218,6 +219,26 @@ def test_N9_redirect_uri_validation(client, uri):
     Ожидается 400."""
     r = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": [uri]})
     assert r.status_code == 400, f"redirect_uri {uri!r} принят ({r.status_code})"
+
+
+@pytest.mark.parametrize("uri", [
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://chat.openai.com/aip/callback",
+    "http://localhost:8765/cb",
+])
+def test_v09_allowed_clients_can_register(client, uri):
+    """v0.9. Коннектор должен подключаться и из Claude, и из ChatGPT: DCR принимает redirect_uri обоих."""
+    r = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": [uri]})
+    assert r.status_code == 201, f"redirect_uri {uri!r} отклонён ({r.status_code}): {r.text}"
+
+
+@pytest.mark.parametrize("uri", ["https://chatgpt.com.evil.com/cb", "https://openai.com.evil.com/cb", "https://notopenai.com/cb"])
+def test_v09_lookalike_hosts_still_rejected(client, uri):
+    """v0.9. Расширение списка хостов не должно открывать похожие домены."""
+    r = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": [uri]})
+    assert r.status_code == 400, f"похожий домен {uri!r} принят ({r.status_code})"
 
 
 def test_N9_code_challenge_format_checked(client):

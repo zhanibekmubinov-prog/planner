@@ -109,3 +109,32 @@
 - Одна битая запись не останавливает тик. Постоянные ошибки (нет Telegram chat id, нет почты, нет исполнителей, канал не настроен) закрывают напоминание сразу (`gave_up`), временные — повтор через 5 минут, не дольше суток. Два экземпляра бэкенда не отправят одно и то же дважды.
 - Недоставленные напоминания за последние сутки попадают в утреннюю сводку («⚠️ Не доставлено») и в `get_overview` (`undelivered_reminders`).
 - Дайджест уходит только в окне `DIGEST_TIME … +2 ч`; после 3 неудач за день — стоп. `/api/notify/run-now` — только админ; `/test` и `/digest` — не чаще раза в минуту.
+
+## v0.9 — тот же коннектор в ChatGPT (2026-09-07)
+
+Сервер один, клиентов два: Claude и ChatGPT. Ничего в инструментах не менялось — ChatGPT читает тот же
+`tools/list`, работает от имени того же Microsoft-аккаунта, видит ровно своё и порученное себе.
+
+**Как подключить в ChatGPT:**
+
+1. **Settings → Security and login → Developer mode** → включить (принять предупреждение).
+2. На странице Plugins нажать **+** и вставить `https://backend-production-830f1.up.railway.app/mcp`.
+3. Пройти OAuth-попап (рабочая учётка @cis.kz) → страница планнера «Разрешить».
+
+Нужен план Plus / Pro / Team / Enterprise / Edu — на бесплатном ChatGPT custom-коннекторы недоступны.
+
+**Что учесть:**
+
+- **Голосом из ChatGPT планнером управлять нельзя** — голосовой режим ChatGPT не поддерживает
+  apps/коннекторы (справка OpenAI). Только текстом. Голос остаётся у Claude (мобильное приложение).
+- Инструменты не работают в расшаренных беседах; есть per-tool rate limits.
+- В Team/Enterprise админ может отключить Developer mode на всю организацию.
+
+**Что правилось в коде:** только `REDIRECT_HOST_ALLOWLIST` в `backend/app/routers/mcp_oauth.py` —
+добавлены `chatgpt.com` и `openai.com` рядом с хостами Claude (суффиксное совпадение, поэтому
+`chatgpt.com.evil.com` по-прежнему отклоняется). Поток Claude, его client_id и выданные токены не
+затронуты. Тесты: `test_v09_allowed_clients_can_register` и `test_v09_lookalike_hosts_still_rejected`
+в `tests/test_adversarial_mcp.py`.
+
+До правки ChatGPT падал на этапе динамической регистрации клиента:
+`Dynamic client registration failed: registration endpoint returned 400 (invalid_redirect_uri)`.

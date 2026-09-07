@@ -1,4 +1,4 @@
-"""OAuth 2.0 для MCP-коннектора Claude (та же схема, что в CIS Platform).
+"""OAuth 2.0 для MCP-коннектора (Claude и ChatGPT; та же схема, что в CIS Platform).
 
 Claude (claude.ai, мобильное приложение, Claude Desktop) добавляет custom connector с URL
 https://<backend>/mcp, сам регистрируется как публичный клиент (RFC 7591), отправляет пользователя
@@ -11,7 +11,8 @@ v0.8 (защита от consent-фишинга и гонок):
 - /oauth/authorize ставит httpOnly-cookie `mcp_auth`; её SHA-256 хранится в McpPendingAuth.scope как суффикс
   «|cb=<hash>» (отдельной колонки нет — схема не менялась). /oauth/consent (GET и POST) принимает запрос только
   из того же браузера. На странице согласия показан хост redirect_uri.
-- redirect_uri: https и хост из REDIRECT_HOST_ALLOWLIST (claude.ai, claude.com, anthropic.com); http — только localhost/127.0.0.1.
+- redirect_uri: https и хост из REDIRECT_HOST_ALLOWLIST (claude.ai, claude.com, anthropic.com,
+  а с v0.9 также chatgpt.com и openai.com — тот же сервер работает и в ChatGPT); http — только localhost/127.0.0.1.
 - /oauth/token требует client_id и redirect_uri, совпадающие с кодом; код и refresh одноразовые атомарно
   (UPDATE … WHERE used=false / revoked=false с проверкой rowcount). Повтор уже использованного кода отзывает токены, выданные по нему.
 - /oauth/register: лимит по IP и общий (в памяти процесса). /oauth/revoke (RFC 7009). Чистка просроченного — cleanup_oauth() из планировщика.
@@ -48,7 +49,10 @@ SCOPE = "planner:full"
 MS_OAUTH = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0"
 COOKIE = "mcp_auth"
 # Хосты, на которые разрешено отдавать код (суффиксное совпадение: *.claude.ai). Пустое множество = любой https-хост.
-REDIRECT_HOST_ALLOWLIST: set[str] = {"claude.ai", "claude.com", "anthropic.com", "localhost", "127.0.0.1"}
+# Claude — claude.ai / claude.com / anthropic.com; ChatGPT — chatgpt.com / openai.com (v0.9).
+REDIRECT_HOST_ALLOWLIST: set[str] = {"claude.ai", "claude.com", "anthropic.com",
+                                    "chatgpt.com", "openai.com",
+                                    "localhost", "127.0.0.1"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 _CHALLENGE_RE = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 # Лимиты регистрации клиентов (в памяти процесса): на IP и суммарно за окно
@@ -168,7 +172,8 @@ async def oauth_register(request: Request, db: Session = Depends(get_db)):
     uris = data.get("redirect_uris") or []
     if not isinstance(uris, list) or not uris or len(uris) > 10 or not all(_valid_redirect_uri(u) for u in uris):
         return JSONResponse({"error": "invalid_redirect_uri",
-                             "error_description": "redirect_uris: список https-адресов на разрешённые хосты (claude.ai) или http://localhost"}, status_code=400)
+                             "error_description": "redirect_uris: список https-адресов на разрешённые хосты "
+                                                  "(claude.ai, claude.com, anthropic.com, chatgpt.com, openai.com) или http://localhost"}, status_code=400)
     client = models.McpClient(client_id=secrets.token_urlsafe(24), client_name=str(data.get("client_name") or "MCP client")[:128], redirect_uris=uris)
     db.add(client); db.commit()
     return {

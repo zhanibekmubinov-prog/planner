@@ -15,7 +15,6 @@ type GuestSession = { token: string; need_password?: boolean; has_password?: boo
 
 export function LoginScreen({ error }: { error?: string | null }) {
   const [cfg, setCfg] = useState<LoginCfg | null>(null);
-  const [guest, setGuest] = useState(false);              // открыт блок входа гостя
   const [busy, setBusy] = useState(!!guestTokenFromHash());
   const [msg, setMsg] = useState<string | null>(null);
   const [email, setEmail] = useState("");
@@ -35,7 +34,7 @@ export function LoginScreen({ error }: { error?: string | null }) {
         if (r.need_password) setSetup(r);
         else { setSession(r.token); window.location.reload(); }
       })
-      .catch((e) => { setBusy(false); setGuest(true); setMsg(cleanError(e)); });
+      .catch((e) => { setBusy(false); setMsg(cleanError(e)); });
   }, []);
 
   async function requestLink() {
@@ -62,42 +61,49 @@ export function LoginScreen({ error }: { error?: string | null }) {
     <div className="login">
       <div className="login-card">
         <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1></div>
-        <p className="login-lead">Направления, задачи, поручения и майндмапы — в одном месте. Войдите рабочей учётной записью.</p>
-        {cfg === null ? <span className="hint">проверяю настройки…</span> : cfg.microsoft ? (
-          <a className="btn primary login-ms" href={`${API_BASE}/api/auth/login`}>
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="6.5" height="6.5" fill="#f25022"/><rect x="8.5" y="1" width="6.5" height="6.5" fill="#7fba00"/><rect x="1" y="8.5" width="6.5" height="6.5" fill="#00a4ef"/><rect x="8.5" y="8.5" width="6.5" height="6.5" fill="#ffb900"/></svg>
-            Войти через Microsoft
-          </a>
-        ) : (
-          <p className="hint">Вход через Microsoft не настроен на сервере (переменные MS_REDIRECT_URI и др.).</p>
-        )}
+        <p className="login-lead">Направления, задачи, поручения и майндмапы — в одном месте.</p>
 
-        {cfg?.guest_login && (guest ? (
-          <div className="login-guest">
+        {/* Два входа подписаны явно (урок 2026-09-07: гость с gmail нажал единственную большую кнопку Microsoft и получил AADSTS50020).
+            Форма гостя видна сразу, а не за ссылкой — на телефоне маленькую ссылку под кнопкой не замечают. */}
+        <section className="login-way" aria-labelledby="login-staff">
+          <h2 id="login-staff" className="login-way-title">Сотрудник CIS</h2>
+          {cfg === null ? <span className="hint">проверяю настройки…</span> : cfg.microsoft ? (
+            <a className="btn primary login-ms" href={`${API_BASE}/api/auth/login`}>
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="6.5" height="6.5" fill="#f25022"/><rect x="8.5" y="1" width="6.5" height="6.5" fill="#7fba00"/><rect x="1" y="8.5" width="6.5" height="6.5" fill="#00a4ef"/><rect x="8.5" y="8.5" width="6.5" height="6.5" fill="#ffb900"/></svg>
+              Войти через Microsoft
+            </a>
+          ) : (
+            <p className="hint">Вход через Microsoft не настроен на сервере (переменные MS_REDIRECT_URI и др.).</p>
+          )}
+          <span className="hint">Рабочая почта @cis.kz. Подрядчикам и партнёрам этот вход не подходит — им ниже.</span>
+        </section>
+
+        {cfg?.guest_login && (
+          <section className="login-way login-guest" aria-labelledby="login-guest-title">
+            <h2 id="login-guest-title" className="login-way-title">Внешний участник</h2>
+            <span className="hint">Подрядчик или партнёр, которого пригласил администратор: почта и пароль. Без Microsoft.</span>
             <div className="field">
               <label htmlFor="guest-email">Почта</label>
-              <input id="guest-email" className="input" type="email" value={email} autoFocus
+              <input id="guest-email" className="input" type="email" value={email} autoComplete="username" inputMode="email"
                      onChange={(e) => setEmail(e.target.value)} placeholder="partner@podryadchik.kz" />
             </div>
             <div className="field">
               <label htmlFor="guest-pwd">Пароль</label>
-              <input id="guest-pwd" className="input" type="password" value={password}
+              <input id="guest-pwd" className="input" type="password" value={password} autoComplete="current-password"
                      onChange={(e) => setPassword(e.target.value)}
                      onKeyDown={(e) => { if (e.key === "Enter" && emailOk && password && !busy) loginWithPassword(); }} />
             </div>
-            <button className="btn primary" onClick={loginWithPassword} disabled={busy || !emailOk || !password}>Войти</button>
+            <button className="btn primary" onClick={loginWithPassword} disabled={busy || !emailOk || !password}>Войти как внешний участник</button>
             <button className="btn ghost sm" onClick={requestLink} disabled={busy || !emailOk}>
               Первый вход или забыли пароль — прислать ссылку на почту
             </button>
-            <span className="hint">Ссылка действует 15 минут и срабатывает один раз; по ней вы зададите пароль. Сотрудникам CIS этот вход не нужен — входите через Microsoft.</span>
-          </div>
-        ) : (
-          <button className="btn ghost sm" onClick={() => setGuest(true)}>Я внешний участник — вход по паролю</button>
-        ))}
+            <span className="hint">Ссылка действует 15 минут и срабатывает один раз; по ней вы зададите пароль.</span>
+          </section>
+        )}
 
         {msg && <p className="hint" style={{ color: "var(--text)" }}>{msg}</p>}
         {error && <p className="login-error">{error}</p>}
-        <p className="hint login-foot">Caspian Integrated Services · доступ по учётным записям компании</p>
+        <p className="hint login-foot">Caspian Integrated Services · доступ только по приглашению</p>
       </div>
     </div>
   );

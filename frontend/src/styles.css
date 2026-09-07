@@ -869,7 +869,13 @@ button.arch-name:hover { color: var(--accent); cursor: pointer; }
 }
 
 /* Вход внешнего участника по ссылке на почту (v0.10) */
-.login-guest { display: grid; gap: 8px; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 2px; background: var(--surface-2); }
+/* Экран входа: два подписанных входа — сотрудник (Microsoft) и внешний участник (почта + пароль) */
+.login-way { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; min-width: 0; padding: 12px 14px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.login-way .btn { white-space: normal; text-align: center; justify-content: center; }   /* длинная подпись кнопки переносится, а не растягивает карточку на телефоне */
+.login-way-title { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); font-weight: 600; }
+[data-theme="journal"] .login-way-title { font-family: var(--font); }
+.login-way .login-ms { width: 100%; }
+.login-guest { background: var(--surface-2); }
 .login-guest .row { gap: 8px; }
 .login-guest .input { min-width: 0; }
 

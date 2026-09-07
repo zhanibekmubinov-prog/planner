@@ -24,10 +24,10 @@ export function makeTask(over: Partial<Task> = {}): Task {
 export function makeStore(over: Partial<Store> = {}): Store {
   return {
     me: { id: 1, email: "me@example.com", name: "Я", is_admin: false, digest_enabled: false },
-    directions: [], projects: [], tasks: [], inbox: [], people: [], tools: [], mindmaps: [], shared: [],
+    directions: [], projects: [], tasks: [], inbox: [], people: [], tools: [], mindmaps: [], shared: [], trash: null,
     loading: false, error: null,
     reload: noop(), reloadTasks: noop(), reloadDirections: noop(), reloadProjects: noop(), reloadShared: noop(),
-    reloadPeople: noop(), reloadTools: noop(), reloadMindmaps: noop(), reloadMe: noop(),
+    reloadPeople: noop(), reloadTools: noop(), reloadMindmaps: noop(), reloadTrash: noop(), reloadMe: noop(),
     setMe: vi.fn(), patchMindmap: vi.fn(), patchTask: vi.fn(), setError: vi.fn(),
     ...over,
   };

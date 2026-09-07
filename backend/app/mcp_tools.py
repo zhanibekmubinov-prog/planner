@@ -9,6 +9,8 @@
 """
 import json
 import logging
+import re
+import secrets
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -18,8 +20,8 @@ from sqlalchemy.orm import Session
 from . import digest, models
 from .config import settings
 from .crud import log
-from .scope import (OWNER, is_assignee, my_person_id, project_access, stamp, task_access, visible_directions, visible_projects,
-                    visible_tasks_query)
+from .scope import (OWNER, WRITE, direction_access, is_assignee, my_person_id, project_access, stamp, task_access, visible_directions,
+                    visible_projects, visible_tasks_query)
 
 _log = logging.getLogger("mcp")
 TZ = ZoneInfo(settings.app_timezone)
@@ -46,14 +48,100 @@ class ToolError(Exception):
         self.hint = hint
 
 
+_SPLIT_RE = re.compile(r"[,;\n]+")
+_PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+LEN_TITLE, LEN_NAME, LEN_TEXT, LEN_URL = 300, 200, 5000, 1000
+PAST_TOLERANCE = timedelta(minutes=5)
+
+
 def _list(a: dict, key: str) -> list:
-    """Список из аргумента: null → [], строка → [строка] (Claude нередко присылает одно имя строкой вместо массива)."""
+    """Список из аргумента: null → [], строка → элементы через `,` / `;` / перевод строки
+    (Claude в голосовом режиме присылает «Снабжение, Бурение» одной строкой), массив → без пустых."""
     v = a.get(key)
     if v in (None, ""):
         return []
     if isinstance(v, (list, tuple)):
-        return [x for x in v if x not in (None, "")]
+        out = []
+        for x in v:
+            if isinstance(x, str):
+                out.extend(p.strip() for p in _SPLIT_RE.split(x) if p.strip())
+            elif x not in (None, ""):
+                out.append(x)
+        return out
+    if isinstance(v, str):
+        return [p.strip() for p in _SPLIT_RE.split(v) if p.strip()]
+    if isinstance(v, dict):
+        raise ToolError(f"{key}: ожидается список строк, получен объект")
     return [v]
+
+
+def _str(a: dict, key: str, max_len: int = LEN_TEXT, required: bool = False) -> str | None:
+    """Строковый аргумент: None → None; список/объект → ToolError; число → строка; обрезка пробелов, лимит длины."""
+    v = a.get(key)
+    if v is None:
+        if required:
+            raise ToolError(f"{key}: обязательное поле")
+        return None
+    if isinstance(v, (list, tuple, dict)) or isinstance(v, bool):
+        raise ToolError(f"{key}: ожидается строка, получен {type(v).__name__}",
+                        hint=f"Передайте {key} одной строкой текста.")
+    s = str(v).strip()
+    if required and not s:
+        raise ToolError(f"{key}: обязательное поле")
+    if len(s) > max_len:
+        raise ToolError(f"{key}: слишком длинно ({len(s)} символов, максимум {max_len})", hint="Сократите текст или перенесите подробности в описание.")
+    return s
+
+
+def _color(a: dict) -> str | None:
+    c = _str(a, "color", 16)
+    if not c:
+        return None
+    if not _COLOR_RE.match(c):
+        raise ToolError("color: ожидается цвет вида #rrggbb, например #0f766e")
+    return c.lower()
+
+
+def parse_int(value, field: str, lo: int | None = None, hi: int | None = None) -> int:
+    if isinstance(value, bool):
+        raise ToolError(f"{field}: ожидается целое число")
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ToolError(f"{field}: ожидается целое число, получено «{value}»",
+                        hint=f"Передайте {field} числом (например 7); слова вроде «неделя» переведите в число сами.")
+    if lo is not None and n < lo or hi is not None and n > hi:
+        raise ToolError(f"{field}: число от {lo if lo is not None else '…'} до {hi if hi is not None else '…'}, получено {n}")
+    return n
+
+
+def _norm(s: str) -> str:
+    """Нормализация для сравнения названий: регистр, ё→е, пунктуация, лишние пробелы."""
+    s = str(s or "").lower().replace("ё", "е")
+    s = _PUNCT_RE.sub(" ", s)
+    return " ".join(s.split())
+
+
+def _stem_eq(w: str, nw: str) -> bool:
+    """Слово запроса ≈ слово названия с учётом окончаний: общий префикс ≥ 3 и не короче min(len)-2 («эмба» ≈ «эмбой»)."""
+    if nw.startswith(w) or w.startswith(nw):
+        return True
+    n = 0
+    for x, y in zip(w, nw):
+        if x != y:
+            break
+        n += 1
+    return n >= 3 and n >= min(len(w), len(nw)) - 2
+
+
+def _alive(items):
+    """Без записей в корзине (soft-delete v0.8): deleted_at есть не у всех моделей — проверяем через getattr."""
+    return [x for x in items if getattr(x, "deleted_at", None) is None]
+
+
+def _is_alive(obj) -> bool:
+    return obj is not None and getattr(obj, "deleted_at", None) is None
 
 
 # ── Вспомогательное ──────────────────────────────────────────────────────────
@@ -104,6 +192,21 @@ def parse_dt(value, field: str) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def parse_future_dt(value, field: str) -> datetime | None:
+    """Дата-время для напоминаний/проверок: в прошлом больше чем на 5 минут — ошибка (Claude часто путает год)."""
+    dt = parse_dt(value, field)
+    if dt is not None and dt < _now() - PAST_TOLERANCE:
+        raise ToolError(f"{field}: {_local(dt)} уже в прошлом (сейчас {_local(_now())} {settings.app_timezone})",
+                        hint="Уточните у человека дату и время; «завтра», «в пятницу» считайте от текущей даты.")
+    return dt
+
+
+def deadline_warning(d: date | None) -> str | None:
+    if d and d < _today():
+        return f"Дедлайн {d.isoformat()} уже в прошлом (сегодня {_today().isoformat()}) — задача сразу считается просроченной. Если это ошибка года, поправьте через update_task."
+    return None
+
+
 def parse_status(value) -> models.TaskStatus:
     key = str(value or "").strip().lower()
     if key not in STATUS_ALIASES:
@@ -132,35 +235,68 @@ _MISSING_HINT = {
 }
 
 
-def _match(items, ref, label: str, name_attr: str = "name"):
-    """Найти одну сущность по id или названию."""
+def _is_done(it) -> bool:
+    return getattr(it, "status", None) == models.TaskStatus.done
+
+
+def _prefer_open(cands: list, write: bool, s: str):
+    """Среди кандидатов-задач предпочесть открытые. Единственный кандидат — выполненная задача, а вызов пишущий →
+    ошибка с id (С1: «возьми в работу договор» не должно оживлять закрытый «Договор»)."""
+    open_ = [it for it in cands if not _is_done(it)]
+    if len(open_) == 1:
+        return open_[0]
+    if not open_ and len(cands) == 1 and write:
+        t = cands[0]
+        raise ToolError(f"Задача «{t.title}» (id {t.id}) уже выполнена — открытых задач с таким названием нет.",
+                        hint=f"Если нужно изменить именно её, повторите вызов с task={t.id}. Если имелась в виду другая задача — уточните название.")
+    if len(cands) == 1:
+        return cands[0]
+    return None
+
+
+def _match(items, ref, label: str, name_attr: str = "name", write: bool = False):
+    """Найти одну сущность по id или названию (регистр, ё/е и пунктуация не важны; допускается часть названия и словоформы)."""
     if ref is None or str(ref).strip() == "":
         raise ToolError(f"{label}: не указано")
     s = str(ref).strip()
+    is_task = name_attr == "title"
+    id_missing = None
     if s.isdigit():
         for it in items:
             if it.id == int(s):
                 return it
-        raise ToolError(f"{label} с id {s} не найдено среди доступных вам",
-                        hint=f"Передайте название вместо id или сверьтесь со списком ({_LIST_TOOL.get(label, 'list_*')}).")
-    low = s.lower()
-    exact = [it for it in items if getattr(it, name_attr).strip().lower() == low]
-    if len(exact) == 1:
-        return exact[0]
-    partial = [it for it in items if low in getattr(it, name_attr).lower()]
-    if len(partial) == 1:
-        return partial[0]
-    if not partial:
-        # мягкий поиск по словам: все слова запроса встречаются в названии
-        words = [w for w in low.replace(",", " ").split() if len(w) > 2]
-        partial = [it for it in items if words and all(w in getattr(it, name_attr).lower() for w in words)]
-        if len(partial) == 1:
+        id_missing = s  # Н1: числовое название («2026») — дальше ищем по имени
+    q = _norm(s)
+    if not q:
+        raise ToolError(f"{label}: пустое название")
+    names = [(it, _norm(getattr(it, name_attr))) for it in items]
+    exact = [it for it, n in names if n == q]
+    if exact:
+        hit = _prefer_open(exact, write, s) if is_task else (exact[0] if len(exact) == 1 else None)
+        if hit is not None:
+            return hit
+        partial = exact
+    else:
+        partial = [it for it, n in names if q in n]
+        if not partial:
+            # мягкий поиск по словам: каждое слово запроса (≥3 символов) есть в названии; слова ≥4 — по основе («договор эмба» ≈ «Договор с Эмбой»)
+            words = [w for w in q.split() if len(w) > 2]
+            def hit(n: str) -> bool:
+                nws = n.split()
+                return bool(words) and all((w in n) if len(w) < 4 else any(_stem_eq(w, nw) for nw in nws) for w in words)
+            partial = [it for it, n in names if hit(n)]
+        if is_task and partial:
+            got = _prefer_open(partial, write, s)
+            if got is not None:
+                return got
+        elif len(partial) == 1:
             return partial[0]
     if not partial:
-        names = ", ".join(f"«{getattr(it, name_attr)}» (id {it.id})" for it in items[:25])
-        raise ToolError(f"{label} «{s}» не найдено. Доступные: {names or 'пока нет ни одного'}", hint=_MISSING_HINT.get(label))
-    names = ", ".join(f"«{getattr(it, name_attr)}» (id {it.id})" for it in partial[:10])
-    raise ToolError(f"{label} «{s}»: несколько совпадений — уточните: {names}",
+        listed = ", ".join(f"«{getattr(it, name_attr)}» (id {it.id})" for it in items[:25])
+        prefix = f"{label} с id {id_missing} не найдено, задачи с названием «{s}» тоже нет" if id_missing else f"{label} «{s}» не найдено"
+        raise ToolError(f"{prefix}. Доступные: {listed or 'пока нет ни одного'}", hint=_MISSING_HINT.get(label))
+    listed = ", ".join(f"«{getattr(it, name_attr)}» (id {it.id}{', выполнено' if _is_done(it) else ''})" for it in partial[:10])
+    raise ToolError(f"{label} «{s}»: несколько совпадений — уточните: {listed}",
                     hint="Спросите человека, какой вариант имелся в виду, и повторите вызов с точным названием или id.")
 
 
@@ -171,21 +307,21 @@ def _checklist_done_count(t: models.Task) -> str:
 
 def my_directions(db: Session, user: models.User, include_archived=True) -> list[models.Direction]:
     """Свои направления + открытые мне на просмотр/редактирование (access в объекте)."""
-    dirs = [d for d in visible_directions(db, user) if d.access != "via"]
+    dirs = [d for d in _alive(visible_directions(db, user)) if d.access != "via"]
     if not include_archived:
         dirs = [d for d in dirs if d.status != models.DirectionStatus.archived]
     return dirs
 
 
 def my_projects(db: Session, user: models.User, include_archived=True) -> list[models.Project]:
-    ps = [p for p in visible_projects(db, user) if p.access != "via"]
+    ps = [p for p in _alive(visible_projects(db, user)) if p.access != "via" and _is_alive(p.direction)]
     if not include_archived:
         ps = [p for p in ps if p.status != models.DirectionStatus.archived]
     return ps
 
 
 def visible_tasks(db: Session, user: models.User) -> list[models.Task]:
-    return db.scalars(visible_tasks_query(db, user).order_by(models.Task.priority, models.Task.deadline)).unique().all()
+    return _alive(db.scalars(visible_tasks_query(db, user).order_by(models.Task.priority, models.Task.deadline)).unique().all())
 
 
 def all_people(db: Session) -> list[models.Person]:
@@ -196,8 +332,9 @@ def resolve_direction(db, user, ref) -> models.Direction:
     return _match(my_directions(db, user), ref, "Направление")
 
 
-def resolve_task(db, user, ref) -> models.Task:
-    return _match(visible_tasks(db, user), ref, "Задача", "title")
+def resolve_task(db, user, ref, write: bool = False) -> models.Task:
+    """write=True — пишущий вызов: единственное совпадение с выполненной задачей → ошибка с id, а не тихая правка."""
+    return _match(visible_tasks(db, user), ref, "Задача", "title", write=write)
 
 
 def resolve_person(db, ref) -> models.Person:
@@ -218,8 +355,14 @@ def _editable(obj, what: str):
     return obj
 
 
+def _owner_only(obj, what: str):
+    if getattr(obj, "access", OWNER) != OWNER:
+        raise ToolError(f"{what}: это может делать только владелец", hint="Попросите владельца сделать это в планнере или через свой Claude.")
+    return obj
+
+
 def _owned_task(db, user, ref) -> models.Task:
-    t = resolve_task(db, user, ref)
+    t = resolve_task(db, user, ref, write=True)
     acc = task_access(db, user, t)
     if acc == "view":
         raise ToolError(f"Задача «{t.title}» открыта вам только на просмотр.")
@@ -251,8 +394,8 @@ def task_brief(t: models.Task) -> dict:
         "deadline": t.deadline.isoformat() if t.deadline else None,
         "overdue": bool(open_ and t.deadline and t.deadline < today),
         "next_check_at": _local(t.next_check_at),
-        "directions": [d.name for d in t.directions],
-        "project": t.project.name if t.project else None, "project_id": t.project_id,
+        "directions": [d.name for d in _alive(t.directions)],
+        "project": t.project.name if _is_alive(t.project) else None, "project_id": t.project_id if _is_alive(t.project) else None,
         "assignees": [f"{d.person.name}{' ✓' if d.status == models.DelegationStatus.done else ''}" for d in t.delegations],
         "owner": t.owner.name if t.owner else None,
         "checklist": _checklist_done_count(t) if t.checklist else None,
@@ -316,6 +459,8 @@ def t_get_overview(db, user, a):
         "ask_people_today": [delegation_out(x, with_task=True) for x in data["deleg_due"]],
         "assigned_to_me": [delegation_out(x, with_task=True) for x in data["inbox"]],
         "open_tasks_total": data["open_count"],
+        "undelivered_reminders": [{"task": x["task"].title, "task_id": x["task"].id, "fire_at": _local(x["fire_at"]), "reason": x["reason"], "detail": x["detail"]}
+                                  for x in data.get("undelivered", [])],
     }
 
 
@@ -374,13 +519,13 @@ def t_list_tasks(db, user, a):
     today = _today()
     if a.get("overdue_only"):
         tasks = [t for t in tasks if t.status != models.TaskStatus.done and t.deadline and t.deadline < today]
-    if a.get("due_within_days") is not None:
-        lim = today + timedelta(days=int(a["due_within_days"]))
+    if a.get("due_within_days") not in (None, ""):
+        lim = today + timedelta(days=parse_int(a["due_within_days"], "due_within_days", 0, 3650))
         tasks = [t for t in tasks if t.deadline and t.deadline <= lim]
     if a.get("query"):
-        q = str(a["query"]).lower()
-        tasks = [t for t in tasks if q in t.title.lower() or (t.description and q in t.description.lower())]
-    limit = int(a.get("limit") or 50)
+        q = _norm(_str(a, "query", LEN_TITLE))
+        tasks = [t for t in tasks if q and (q in _norm(t.title) or (t.description and q in _norm(t.description)))]
+    limit = parse_int(a["limit"], "limit", 1, 500) if a.get("limit") not in (None, "") else 50
     return {"count": len(tasks), "tasks": [task_brief(t) for t in tasks[:limit]]}
 
 
@@ -465,36 +610,59 @@ def t_get_team_report(db, user, a):
 
 # ── Запись ───────────────────────────────────────────────────────────────────
 
-def t_create_direction(db, user, a):
-    name = str(a.get("name") or "").strip()
+def _clean_name(a: dict, key: str, what: str) -> str:
+    """Название направления/проекта/человека: строка ≤200, без запятых (иначе это список, а не имя)."""
+    name = _str(a, key, LEN_NAME)
     if not name:
-        raise ToolError("name: укажите название направления")
-    existing = [d for d in my_directions(db, user) if d.name.strip().lower() == name.lower()]
+        raise ToolError(f"{key}: укажите название {what}")
+    if "," in name or ";" in name or "\n" in name:
+        raise ToolError(f"{key}: «{name}» похоже на несколько названий через запятую — создавайте по одному",
+                        hint="Разбейте на отдельные вызовы или передайте список в поле-массив (directions, assign_to…).")
+    return name
+
+
+def t_create_direction(db, user, a):
+    name = _clean_name(a, "name", "направления")
+    existing = [d for d in my_directions(db, user) if _norm(d.name) == _norm(name)]
     if existing:
         raise ToolError(f"Направление «{existing[0].name}» уже есть (id {existing[0].id}). Используйте его или выберите другое название.")
     used = {d.color for d in my_directions(db, user)}
-    color = a.get("color") or next((c for c in PALETTE if c not in used), PALETTE[len(used) % len(PALETTE)])
-    d = models.Direction(name=name, goal=a.get("goal"), description=a.get("description"), color=color, owner_id=user.id)
+    color = _color(a) or next((c for c in PALETTE if c not in used), PALETTE[len(used) % len(PALETTE)])
+    d = models.Direction(name=name, goal=_str(a, "goal"), description=_str(a, "description"), color=color, owner_id=user.id)
     db.add(d); db.flush(); log(db, d, "create", {"via": "mcp"}); db.commit()
     return {"created": True, "direction": direction_brief(d)}
 
 
-def t_update_direction(db, user, a):
-    d = _editable(resolve_direction(db, user, a.get("direction")), "Направление")
+def _apply_container_update(obj, a: dict, what: str) -> list[str]:
+    """Общая правка направления/проекта. Переименование и архив — только владелец (Н6: голосовая ошибка распознавания
+    не должна архивировать чужую доску)."""
     changed = []
-    for k in ("name", "goal", "description", "color"):
+    for k in ("name", "goal", "description"):
         if a.get(k) is not None:
-            val = str(a[k]).strip()
-            if k == "name" and not val:
-                raise ToolError("name: название не может быть пустым")
-            setattr(d, k, val or None); changed.append(k)
+            val = _str(a, k, LEN_NAME if k == "name" else LEN_TEXT)
+            if k == "name":
+                if not val:
+                    raise ToolError("name: название не может быть пустым")
+                _owner_only(obj, f"{what}: переименование")
+            setattr(obj, k, val or None); changed.append(k)
+    if a.get("color") is not None:
+        obj.color = _color(a); changed.append("color")
     if a.get("status") is not None:
         key = str(a["status"]).strip().lower()
         if key not in DIR_STATUS_ALIASES:
             raise ToolError("status: active (активно) | paused (пауза) | archived (архив)")
-        d.status = models.DirectionStatus(DIR_STATUS_ALIASES[key]); changed.append("status")
+        st = models.DirectionStatus(DIR_STATUS_ALIASES[key])
+        if st == models.DirectionStatus.archived:
+            _owner_only(obj, f"{what}: перенос в архив")
+        obj.status = st; changed.append("status")
     if not changed:
         raise ToolError("Нечего менять: передайте name, goal, description, color или status")
+    return changed
+
+
+def t_update_direction(db, user, a):
+    d = _editable(resolve_direction(db, user, a.get("direction")), "Направление")
+    changed = _apply_container_update(d, a, "Направление")
     log(db, d, "update", {"via": "mcp", "fields": changed}); db.commit()
     return {"updated": changed, "direction": direction_brief(d)}
 
@@ -513,18 +681,53 @@ def _add_delegation(db, user, task: models.Task, person: models.Person, check_at
     return d
 
 
+def _similar_people(db, name: str) -> list[models.Person]:
+    """Кто в справочнике похож на это имя (С2): одно слово запроса ≈ слово существующего имени (по основе),
+    либо одно из имён — префикс другого. Полное «Имя Фамилия» против другого полного имени — не похоже."""
+    q = _norm(name); qw = q.split()
+    out = []
+    for p in all_people(db):
+        n = _norm(p.name); nw = n.split()
+        if not n or not nw:
+            continue
+        if n == q or n.startswith(q + " ") or q.startswith(n + " "):
+            out.append(p)
+        elif len(qw) == 1 and any(_stem_eq(qw[0], w) for w in nw):
+            out.append(p)
+        elif len(nw) == 1 and any(_stem_eq(nw[0], w) for w in qw):
+            out.append(p)
+    return out
+
+
+def _new_person(db, name: str) -> models.Person:
+    sim = _similar_people(db, name)
+    if sim:
+        listed = ", ".join(f"«{p.name}» (id {p.id})" for p in sim[:10])
+        raise ToolError(f"«{name}»: похожие люди уже есть в справочнике — {listed}",
+                        hint="Если это тот же человек — используйте его имя или id. Если другой — укажите полное имя (имя и фамилию).")
+    p = models.Person(name=name); db.add(p); db.flush(); log(db, p, "create", {"via": "mcp"})
+    return p
+
+
 def _find_or_create_person(db, ref, create: bool) -> models.Person:
     try:
         return resolve_person(db, ref)
     except ToolError as e:
         if create and "не найдено" in str(e):
-            p = models.Person(name=str(ref).strip()); db.add(p); db.flush(); log(db, p, "create", {"via": "mcp"})
-            return p
+            name = _clean_name({"name": ref}, "name", "человека")
+            return _new_person(db, name)
         raise
 
 
+def _check_owner_sees(db, user, t: models.Task, d: models.Direction):
+    """Редактор не может привязать чужую задачу к направлению, которого владелец задачи не видит."""
+    if t.owner_id != user.id and t.owner is not None and direction_access(db, t.owner, d) is None:
+        raise ToolError(f"Направление «{d.name}» не видно владельцу задачи ({t.owner.name}) — привязать нельзя",
+                        hint="Добавляйте чужие задачи только в направления, открытые их владельцу.")
+
+
 def t_create_task(db, user, a):
-    title = str(a.get("title") or "").strip()
+    title = _str(a, "title", LEN_TITLE)
     if not title:
         raise ToolError("title: укажите название задачи")
     dirs = []
@@ -533,17 +736,20 @@ def t_create_task(db, user, a):
             dirs.append(resolve_direction(db, user, ref))
         except ToolError as e:
             if a.get("create_direction_if_missing") and "не найдено" in str(e):
-                dirs.append(models.Direction(name=str(ref).strip(), owner_id=user.id, color=PALETTE[len(my_directions(db, user)) % len(PALETTE)]))
+                name = _clean_name({"directions": ref}, "directions", "направления")
+                dirs.append(models.Direction(name=name, owner_id=user.id, color=PALETTE[len(my_directions(db, user)) % len(PALETTE)]))
                 db.add(dirs[-1]); db.flush(); log(db, dirs[-1], "create", {"via": "mcp"})
             else:
                 raise
     project = None
     if a.get("project"):
+        pref = _str(a, "project", LEN_NAME)
         try:
-            project = resolve_project(db, user, a["project"], dirs[0] if len(dirs) == 1 else None)
+            project = resolve_project(db, user, pref, dirs[0] if len(dirs) == 1 else None)
         except ToolError as e:
             if a.get("create_project_if_missing") and "не найдено" in str(e) and len(dirs) == 1:
-                project = models.Project(name=str(a["project"]).strip(), direction_id=dirs[0].id, owner_id=dirs[0].owner_id or user.id)
+                _editable(dirs[0], f"Направление «{dirs[0].name}»")
+                project = models.Project(name=_clean_name({"project": pref}, "project", "проекта"), direction_id=dirs[0].id, owner_id=dirs[0].owner_id or user.id)
                 db.add(project); db.flush(); log(db, project, "create", {"via": "mcp", "by": user.id})
                 stamp(project, project_access(db, user, project))
             elif a.get("create_project_if_missing") and "не найдено" in str(e):
@@ -557,45 +763,66 @@ def t_create_task(db, user, a):
         _editable(d, f"Направление «{d.name}»")
     # задача в чужом (открытом мне) направлении принадлежит его хозяину — доска остаётся его
     owner_id = user.id if (not dirs or any(x.owner_id == user.id for x in dirs)) else (project.owner_id if project and project.owner_id else dirs[0].owner_id or user.id)
-    t = models.Task(title=title, description=a.get("description"), owner_id=owner_id,
+    deadline = parse_date(a.get("deadline"), "deadline")
+    t = models.Task(title=title, description=_str(a, "description"), owner_id=owner_id,
                     status=parse_status(a["status"]) if a.get("status") else models.TaskStatus.backlog,
                     priority=parse_priority(a["priority"]) if a.get("priority") is not None else 3,
-                    deadline=parse_date(a.get("deadline"), "deadline"), next_check_at=parse_dt(a.get("next_check_at"), "next_check_at"))
+                    deadline=deadline, next_check_at=parse_future_dt(a.get("next_check_at"), "next_check_at"))
     t.directions = dirs
     t.project = project
     db.add(t); db.flush(); log(db, t, "create", {"via": "mcp", "by": user.id})
-    check_at = parse_dt(a.get("check_at"), "check_at")
+    check_at = parse_future_dt(a.get("check_at"), "check_at")
+    comment = _str(a, "comment")
     for ref in _list(a, "assign_to"):
         p = _find_or_create_person(db, ref, bool(a.get("create_person_if_missing")))
-        _add_delegation(db, user, t, p, check_at, a.get("comment"))
+        _add_delegation(db, user, t, p, check_at, comment)
     if a.get("remind_at"):
-        _add_reminder(db, t, a["remind_at"], a.get("remind_channels"), a.get("remind_message"), a.get("remind_recipient"))
+        _add_reminder(db, t, a["remind_at"], a.get("remind_channels"), _str(a, "remind_message"), a.get("remind_recipient"))
     db.commit(); db.refresh(t)
-    return {"created": True, "task": task_full(t), "link": f"{settings.frontend_url.rstrip('/')}/?task={t.id}" if settings.frontend_url else None}
+    out = {"created": True, "task": task_full(t), "link": f"{settings.frontend_url.rstrip('/')}/?task={t.id}" if settings.frontend_url else None}
+    if (w := deadline_warning(deadline)):
+        out["warning"] = w
+    return out
 
 
 def t_update_task(db, user, a):
     t = _owned_task(db, user, a.get("task"))
-    changed = []
-    if a.get("title") is not None: t.title = str(a["title"]).strip() or t.title; changed.append("title")
-    if a.get("description") is not None: t.description = a["description"]; changed.append("description")
+    is_owner = t.owner_id == user.id
+    changed = []; warning = None
+    if a.get("title") is not None:
+        title = _str(a, "title", LEN_TITLE)
+        if not title:
+            raise ToolError("title: название не может быть пустым")
+        t.title = title; changed.append("title")
+    if a.get("description") is not None: t.description = _str(a, "description"); changed.append("description")
     if a.get("priority") is not None: t.priority = parse_priority(a["priority"]); changed.append("priority")
-    if "deadline" in a: t.deadline = parse_date(a["deadline"], "deadline"); changed.append("deadline")
-    if "next_check_at" in a: t.next_check_at = parse_dt(a["next_check_at"], "next_check_at"); changed.append("next_check_at")
+    if "deadline" in a:
+        t.deadline = parse_date(a["deadline"], "deadline"); changed.append("deadline"); warning = deadline_warning(t.deadline)
+    if "next_check_at" in a: t.next_check_at = parse_future_dt(a["next_check_at"], "next_check_at"); changed.append("next_check_at")
     if a.get("status") is not None:
         old = t.status; t.status = parse_status(a["status"])
         if old != t.status: log(db, t, "status_change", {"from": old.value, "to": t.status.value, "by": user.id, "via": "mcp"}); changed.append("status")
+    # направления и проект — по правилам REST: добавлять только в свои/редактируемые, снимать — только своё/редактируемое;
+    # редактор чужой задачи не может увести её с доски владельца (В1)
     for ref in _list(a, "add_directions"):
-        d = resolve_direction(db, user, ref)
+        d = _editable(resolve_direction(db, user, ref), "Направление")
+        _check_owner_sees(db, user, t, d)
         if d not in t.directions: t.directions.append(d); changed.append(f"+{d.name}")
     for ref in _list(a, "remove_directions"):
-        d = resolve_direction(db, user, ref)
+        d = _editable(resolve_direction(db, user, ref), "Направление")
         if d in t.directions: t.directions.remove(d); changed.append(f"-{d.name}")
     if "project" in a:
         if a["project"] in (None, "", "null", "none", "без проекта"):
-            t.project = None; changed.append("project: без проекта")
+            if t.project is not None:
+                if not is_owner and project_access(db, user, t.project) not in WRITE:
+                    raise ToolError(f"Убрать задачу из проекта «{t.project.name}» может владелец задачи или редактор проекта")
+                t.project = None; changed.append("project: без проекта")
         else:
-            p = _editable(resolve_project(db, user, a["project"]), "Проект")
+            p = _editable(resolve_project(db, user, _str(a, "project", LEN_NAME)), "Проект")
+            if t.project is not None and t.project.id != p.id and not is_owner and project_access(db, user, t.project) not in WRITE:
+                raise ToolError(f"Перенести задачу из проекта «{t.project.name}» может владелец задачи или редактор этого проекта")
+            if not is_owner and t.owner is not None and project_access(db, t.owner, p) is None:
+                raise ToolError(f"Проект «{p.name}» не виден владельцу задачи — перенести нельзя")
             t.project = p
             if all(x.id != p.direction_id for x in t.directions): t.directions.append(p.direction)
             changed.append(f"project: {p.name}")
@@ -603,11 +830,15 @@ def t_update_task(db, user, a):
         raise ToolError("Нечего менять: передайте title, description, priority, deadline, next_check_at, status, project, add_directions или remove_directions")
     if "status" not in changed: log(db, t, "update", {"via": "mcp", "fields": changed})
     db.commit(); db.refresh(t)
-    return {"updated": changed, "task": task_full(t)}
+    out = {"updated": changed, "task": task_full(t)}
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 def t_set_task_status(db, user, a):
-    t = resolve_task(db, user, a.get("task"))
+    # write=True: единственное совпадение с выполненной задачей → ошибка с id; но переоткрыть по id можно
+    t = resolve_task(db, user, a.get("task"), write=True)
     acc = task_access(db, user, t)
     if acc == "view" or acc is None:
         raise ToolError("Менять статус может владелец задачи, редактор или исполнитель")
@@ -623,40 +854,51 @@ def t_set_task_status(db, user, a):
 
 def t_add_task_note(db, user, a):
     t = _owned_task(db, user, a.get("task"))
-    text = str(a.get("text") or "").strip()
+    text = _str(a, "text")
     if not text:
         raise ToolError("text: пустая заметка")
-    stamp = _now().astimezone(TZ).strftime("%d.%m.%Y %H:%M")
-    t.description = f"{(t.description or '').rstrip()}\n\n[{stamp}] {text}".strip()
+    stamp_ = _now().astimezone(TZ).strftime("%d.%m.%Y %H:%M")
+    t.description = f"{(t.description or '').rstrip()}\n\n[{stamp_}] {text}".strip()
     log(db, t, "update", {"via": "mcp", "fields": ["note"]}); db.commit()
     return {"task": t.id, "title": t.title, "description": t.description}
 
 
 def t_add_checklist_items(db, user, a):
     t = _owned_task(db, user, a.get("task"))
-    items = [str(x).strip() for x in _list(a, "items") if str(x).strip()]
+    items = [str(x).strip()[:LEN_TITLE] for x in _list(a, "items") if str(x).strip()]
     if not items:
         raise ToolError("items: список пунктов (строки)", hint="Передайте items массивом строк, например [\"Собрать КП\", \"Согласовать с юристом\"].")
-    import secrets
     cl = list(t.checklist or [])
-    cl.extend({"id": secrets.token_hex(4), "text": x, "done": False} for x in items)
+    have = {_norm(c.get("text", "")) for c in cl}
+    added, skipped = [], []
+    for x in items:
+        if _norm(x) in have:
+            skipped.append(x); continue
+        have.add(_norm(x)); added.append(x)
+        cl.append({"id": secrets.token_hex(4), "text": x, "done": False})
+    if not added:
+        raise ToolError("Все эти пункты уже есть в чеклисте", hint="Ничего добавлять не нужно; отметить пункт — check_item.")
     t.checklist = cl
     log(db, t, "update", {"via": "mcp", "fields": ["checklist"]}); db.commit(); db.refresh(t)
-    return {"task": t.id, "title": t.title, "added": len(items), "progress": _checklist_done_count(t), "checklist": t.checklist}
+    out = {"task": t.id, "title": t.title, "added": len(added), "progress": _checklist_done_count(t), "checklist": t.checklist}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 def t_check_item(db, user, a):
-    t = resolve_task(db, user, a.get("task"))
+    t = resolve_task(db, user, a.get("task"), write=True)
     acc = task_access(db, user, t)
-    if acc == "view":
+    if acc == "view" or acc is None:
         raise ToolError(f"Задача «{t.title}» открыта вам только на просмотр.")
     cl = list(t.checklist or [])
     if not cl:
         raise ToolError(f"У задачи «{t.title}» нет чеклиста.", hint="Добавьте пункты через add_checklist_items.")
-    ref = str(a.get("item") or "").strip().lower()
+    raw = _str(a, "item", LEN_TITLE) or ""
+    ref = _norm(raw)
     if not ref:
         raise ToolError("item: какой пункт отметить (текст или его часть, либо id)")
-    hits = [c for c in cl if c.get("id") == ref or str(c.get("text", "")).lower() == ref] or [c for c in cl if ref in str(c.get("text", "")).lower()]
+    hits = [c for c in cl if c.get("id") == raw.lower() or _norm(c.get("text", "")) == ref] or [c for c in cl if ref in _norm(c.get("text", ""))]
     if len(hits) != 1:
         names = ", ".join(f"«{c.get('text')}»" for c in (hits or cl)[:10])
         raise ToolError(f"Пункт «{a.get('item')}»: {'несколько совпадений' if hits else 'не найден'} — {names}",
@@ -674,42 +916,49 @@ def t_delegate_task(db, user, a):
     refs = _list(a, "people") or _list(a, "person")
     if not refs:
         raise ToolError("person или people: кому поручить")
-    check_at = parse_dt(a.get("check_at"), "check_at")
+    check_at = parse_future_dt(a.get("check_at"), "check_at")
+    comment = _str(a, "comment")
     result = []
     for ref in refs:
         p = _find_or_create_person(db, ref, bool(a.get("create_person_if_missing")))
-        result.append(_add_delegation(db, user, t, p, check_at, a.get("comment")))
+        result.append(_add_delegation(db, user, t, p, check_at, comment))
+    warning = None
     if "deadline" in a and a["deadline"]:
-        t.deadline = parse_date(a["deadline"], "deadline")
+        t.deadline = parse_date(a["deadline"], "deadline"); warning = deadline_warning(t.deadline)
     db.commit(); db.refresh(t)
-    return {"task": task_brief(t), "delegations": [delegation_out(d) for d in result],
-            "note": "Исполнителю в течение минуты уйдёт уведомление «Вам поручено» (Telegram или почта), если он есть в планнере."}
+    out = {"task": task_brief(t), "delegations": [delegation_out(d) for d in result],
+           "note": "Исполнителю в течение минуты уйдёт уведомление «Вам поручено» (Telegram или почта), если он есть в планнере."}
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 def t_update_delegation(db, user, a):
-    t = resolve_task(db, user, a.get("task"))
+    t = resolve_task(db, user, a.get("task"), write=True)
     pid = my_person_id(db, user)
+    acc = task_access(db, user, t)
+    can_write = acc in WRITE  # владелец или редактор задачи — как PUT /delegations в REST (Н5)
     if a.get("person"):
-        p = resolve_person(db, a["person"])
+        p = resolve_person(db, _str(a, "person", LEN_NAME))
         d = next((x for x in t.delegations if x.person_id == p.id), None)
     else:
-        d = next((x for x in t.delegations if x.person_id == pid), None) if t.owner_id != user.id else (t.delegations[0] if len(t.delegations) == 1 else None)
+        d = next((x for x in t.delegations if x.person_id == pid), None) if not can_write else (t.delegations[0] if len(t.delegations) == 1 else None)
     if d is None:
         names = ", ".join(x.person.name for x in t.delegations) or "нет поручений"
         raise ToolError(f"Не удалось определить поручение по задаче «{t.title}». Укажите person. Исполнители: {names}")
-    is_owner, is_mine = t.owner_id == user.id, d.person_id == pid
-    if not (is_owner or is_mine):
-        raise ToolError("Менять поручение может владелец задачи или сам исполнитель")
+    is_mine = d.person_id == pid
+    if not (can_write or is_mine):
+        raise ToolError("Менять поручение может владелец задачи, редактор или сам исполнитель")
     changed = []
     if a.get("status") is not None:
         key = str(a["status"]).strip().lower()
         st = "done" if key in ("done", "выполнено", "готово", "сделано", "закрыто") else "open" if key in ("open", "открыто", "вернуть", "снова") else None
         if st is None: raise ToolError("status: done (выполнено) | open (открыто)")
         d.status = models.DelegationStatus(st); changed.append("status")
-    if a.get("report") is not None: d.report = a["report"]; changed.append("report")
-    if is_owner:
-        if "check_at" in a: d.check_at = parse_dt(a["check_at"], "check_at"); d.notified_at = None; changed.append("check_at")
-        if a.get("comment") is not None: d.comment = a["comment"]; changed.append("comment")
+    if a.get("report") is not None: d.report = _str(a, "report"); changed.append("report")
+    if can_write:
+        if "check_at" in a: d.check_at = parse_future_dt(a["check_at"], "check_at"); d.notified_at = None; changed.append("check_at")
+        if a.get("comment") is not None: d.comment = _str(a, "comment"); changed.append("comment")
     elif "check_at" in a or a.get("comment") is not None:
         raise ToolError("Исполнитель может менять только status и report")
     if not changed:
@@ -719,9 +968,12 @@ def t_update_delegation(db, user, a):
 
 
 def _add_reminder(db, task: models.Task, fire_at, channels, message, recipient) -> models.Reminder:
-    when = parse_dt(fire_at, "fire_at")
+    when = parse_future_dt(fire_at, "fire_at")
     if when is None:
         raise ToolError("fire_at: когда напомнить (ISO дата-время)")
+    if message is not None and not isinstance(message, str):
+        raise ToolError("message: ожидается строка")
+    message = (message or "").strip()[:LEN_TEXT] or None
     chans = _list({"c": channels}, "c") or ["telegram"]
     chans = [{"calendar": "outlook_calendar", "outlook": "outlook_calendar", "mail": "email", "почта": "email", "телеграм": "telegram", "tg": "telegram"}.get(str(c).strip().lower(), str(c).strip().lower()) for c in chans]
     bad = [c for c in chans if c not in ("telegram", "email", "outlook_calendar")]
@@ -743,31 +995,57 @@ def t_add_reminder(db, user, a):
     return {"task": t.title, "reminder": {"id": r.id, "fire_at": _local(r.fire_at), "channels": r.channels, "recipient": r.recipient, "message": r.message}}
 
 
+def _work_email(a: dict, key: str = "email") -> str | None:
+    """Почта: одна строка, формат user@domain, домен из ALLOWED_EMAIL_DOMAINS (если задан) — как в share_access (В2)."""
+    v = a.get(key)
+    if v in (None, ""):
+        return None
+    if not isinstance(v, str):
+        raise ToolError(f"{key}: ожидается одна почта строкой", hint="Передайте один адрес, например n.abilkhanov@cis.kz.")
+    email = v.strip().lower()
+    if "@" not in email or " " in email or email.count("@") != 1 or "." not in email.split("@")[1]:
+        raise ToolError(f"{key}: «{v}» не похоже на почту", hint="Формат: имя@домен, например n.abilkhanov@cis.kz.")
+    if len(email) > LEN_NAME:
+        raise ToolError(f"{key}: слишком длинно")
+    domain = email.split("@")[1]
+    if settings.allowed_domains and domain not in settings.allowed_domains:
+        raise ToolError(f"{key}: разрешена только рабочая почта @{', @'.join(settings.allowed_domains)} (получено @{domain})",
+                        hint="Внешние адреса в справочник не добавляются; поручать можно только сотрудникам.")
+    return email
+
+
 def t_create_person(db, user, a):
-    name = str(a.get("name") or "").strip()
-    if not name:
-        raise ToolError("name: имя человека")
-    dup = [p for p in all_people(db) if p.name.strip().lower() == name.lower()]
+    name = _clean_name(a, "name", "человека")
+    dup = [p for p in all_people(db) if _norm(p.name) == _norm(name)]
     if dup:
         raise ToolError(f"«{dup[0].name}» уже есть в справочнике (id {dup[0].id})")
-    p = models.Person(name=name, email=(a.get("email") or None), telegram_chat_id=(a.get("telegram_chat_id") or None), note=a.get("note"))
-    if p.email:
-        u = db.scalar(select(models.User).where(models.User.email == p.email.lower()))
-        if u and not db.scalar(select(models.Person).where(models.Person.user_id == u.id)): p.user_id = u.id
-    db.add(p); db.flush(); log(db, p, "create", {"via": "mcp"}); db.commit()
+    email = _work_email(a)
+    if email and (same := db.scalar(select(models.Person).where(models.Person.email == email))):
+        raise ToolError(f"Почта {email} уже у «{same.name}» (id {same.id})", hint="Используйте существующую запись.")
+    tg = _str(a, "telegram_chat_id", 64)
+    if tg and not re.fullmatch(r"-?\d{1,20}", tg):
+        raise ToolError("telegram_chat_id: ожидается числовой chat id")
+    p = _new_person(db, name)
+    # без автопривязки user_id к чужому аккаунту (С10): связь Person↔User создаёт только сам пользователь при входе
+    p.email, p.telegram_chat_id, p.note = email, tg or None, _str(a, "note")
+    db.commit()
     return {"created": True, "person": person_brief(p)}
 
 
 def t_add_tool(db, user, a):
-    name = str(a.get("name") or "").strip()
+    name = _str(a, "name", LEN_NAME)
     if not name:
         raise ToolError("name: название тула")
-    typ = a.get("type") or "other"
+    typ = str(a.get("type") or "other").strip().lower()
     if typ not in [x.value for x in models.ToolType]:
         raise ToolError("type: google_sheet | excel_sharepoint | telegram_bot | notion | other")
-    tool = models.Tool(name=name, type=models.ToolType(typ), url=a.get("url"), note=a.get("note"), owner_id=user.id)
+    url = _str(a, "url", LEN_URL)
+    if url and not re.match(r"^https?://\S+$", url):
+        raise ToolError("url: ожидается ссылка вида https://…")
+    tool = models.Tool(name=name, type=models.ToolType(typ), url=url or None, note=_str(a, "note"), owner_id=user.id)
     tool.tasks = [_owned_task(db, user, r) for r in _list(a, "tasks")]
-    tool.directions = [resolve_direction(db, user, r) for r in _list(a, "directions")]
+    # тул вешается только на свои направления или открытые на редактирование (В1)
+    tool.directions = [_editable(resolve_direction(db, user, r), "Направление") for r in _list(a, "directions")]
     db.add(tool); db.flush(); log(db, tool, "create", {"via": "mcp"}); db.commit()
     return {"created": True, "tool": {"id": tool.id, "name": tool.name, "type": tool.type.value, "url": tool.url,
                                       "tasks": [t.title for t in tool.tasks], "directions": [d.name for d in tool.directions]}}
@@ -786,15 +1064,13 @@ def t_list_projects(db, user, a):
 
 
 def t_create_project(db, user, a):
-    name = str(a.get("name") or "").strip()
-    if not name:
-        raise ToolError("name: укажите название проекта")
+    name = _clean_name(a, "name", "проекта")
     d = _editable(resolve_direction(db, user, a.get("direction")), "Направление")
-    dup = [p for p in my_projects(db, user) if p.direction_id == d.id and p.name.strip().lower() == name.lower()]
+    dup = [p for p in my_projects(db, user) if p.direction_id == d.id and _norm(p.name) == _norm(name)]
     if dup:
         raise ToolError(f"Проект «{dup[0].name}» в направлении «{d.name}» уже есть (id {dup[0].id}).",
                         hint="Создавать не нужно — используйте этот проект: передайте его название или id в поле project у create_task / update_task.")
-    p = models.Project(name=name, goal=a.get("goal"), description=a.get("description"), color=a.get("color"), direction_id=d.id,
+    p = models.Project(name=name, goal=_str(a, "goal"), description=_str(a, "description"), color=_color(a), direction_id=d.id,
                        owner_id=d.owner_id if d.owner_id else user.id)
     db.add(p); db.flush(); log(db, p, "create", {"via": "mcp", "by": user.id}); db.commit(); db.refresh(p)
     stamp(p, project_access(db, user, p))
@@ -803,20 +1079,7 @@ def t_create_project(db, user, a):
 
 def t_update_project(db, user, a):
     p = _editable(resolve_project(db, user, a.get("project")), "Проект")
-    changed = []
-    for k in ("name", "goal", "description", "color"):
-        if a.get(k) is not None:
-            val = str(a[k]).strip()
-            if k == "name" and not val:
-                raise ToolError("name: название не может быть пустым")
-            setattr(p, k, val or None); changed.append(k)
-    if a.get("status") is not None:
-        key = str(a["status"]).strip().lower()
-        if key not in DIR_STATUS_ALIASES:
-            raise ToolError("status: active (активно) | paused (пауза) | archived (архив)")
-        p.status = models.DirectionStatus(DIR_STATUS_ALIASES[key]); changed.append("status")
-    if not changed:
-        raise ToolError("Нечего менять: передайте name, goal, description, color или status")
+    changed = _apply_container_update(p, a, "Проект")
     log(db, p, "update", {"via": "mcp", "fields": changed}); db.commit(); db.refresh(p)
     return {"updated": changed, "project": project_brief(p)}
 
@@ -847,8 +1110,13 @@ def t_share_access(db, user, a):
     perm = {"view": "view", "просмотр": "view", "смотреть": "view", "edit": "edit", "редактирование": "edit", "редактировать": "edit"}.get(perm)
     if not perm:
         raise ToolError("permission: view (смотреть) | edit (редактировать)")
+    email = a.get("email")
+    if not isinstance(email, str) or not email.strip():
+        raise ToolError("email: ожидается одна рабочая почта строкой", hint="Например n.abilkhanov@cis.kz; несколько человек — отдельными вызовами.")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()):
+        raise ToolError(f"email: «{email}» не похоже на почту")
     try:
-        target = find_or_invite_user(db, str(a.get("email") or ""))
+        target = find_or_invite_user(db, email)
     except HTTPException as e:
         raise ToolError(e.detail)
     if target.id == user.id:
@@ -875,8 +1143,8 @@ def t_share_access(db, user, a):
 
 def t_revoke_access(db, user, a):
     et, obj = _share_target(db, user, a)
-    email = str(a.get("email") or "").strip().lower()
-    target = db.scalar(select(models.User).where(models.User.email == email))
+    email = (_str(a, "email", LEN_NAME) or "").lower()
+    target = db.scalar(select(models.User).where(models.User.email == email)) if email else None
     sh = target and db.scalar(select(models.Share).where(models.Share.entity_type == et, models.Share.entity_id == obj.id, models.Share.user_id == target.id))
     if not sh:
         raise ToolError(f"У {email} нет доступа к этому объекту")
@@ -896,7 +1164,7 @@ def t_list_shares(db, user, a):
     for s in rows:
         model = {"direction": models.Direction, "project": models.Project, "task": models.Task}[s.entity_type]
         obj = db.get(model, s.entity_id)
-        if obj:
+        if _is_alive(obj):
             out.append({"entity_type": s.entity_type, "id": obj.id, "name": getattr(obj, "title", None) or obj.name,
                         "permission": s.permission, "shared_by": s.granter.name if s.granter else None})
     return {"shared_with_me": out}
@@ -1092,6 +1360,9 @@ def instructions_for(user: models.User) -> str:
         "создай недостающий проект/направление/человека (create_project, create_direction, create_person или флаги create_*_if_missing) и повтори вызов. "
         "Не повторяй тот же вызов без изменений и не объявляй человеку сбой, пока не исправил вызов по подсказке. Сначала создаётся направление, потом проект в нём, "
         "потом задача в проекте — в этом порядке.\n"
+        "Выполненные задачи по названию для правок не берутся: если сервер ответил «уже выполнена, id N» — уточни у человека или повтори с id. "
+        "Даты напоминаний и проверок в прошлом сервер отклоняет; дедлайн в прошлом принимается, но в ответе будет warning — озвучь его. "
+        "Списки (directions, assign_to, items) можно передавать строкой через запятую; названия направлений/людей с запятой не создаются.\n"
         "Чеклист: «добавь пункты», «разбей на шаги» — add_checklist_items; «отметь пункт …» — check_item. "
         "Проекты: задача может лежать в проекте внутри направления («в Эмбе проект Договор основной») или прямо в направлении. "
         "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие»."
@@ -1121,7 +1392,9 @@ def call_tool(db: Session, user: models.User, name: str, arguments) -> tuple[str
         return json.dumps(out, ensure_ascii=False), True
     except Exception as e:  # noqa: BLE001
         db.rollback()
-        _log.exception("mcp %s by %s: внутренняя ошибка | args=%s", name, user.email, brief_args)
-        return json.dumps({"error": f"внутренняя ошибка сервера: {type(e).__name__}: {e}",
-                           "hint": "Это сбой на стороне планнера, а не в вызове. Сообщите человеку текст ошибки; не повторяйте вызов вслепую."},
+        incident = secrets.token_hex(4)
+        _log.exception("mcp %s by %s: внутренняя ошибка [%s] | args=%s", name, user.email, incident, brief_args)
+        # текст исключения (SQL, параметры) Claude не отдаём — только тип и номер инцидента для поиска в логе
+        return json.dumps({"error": f"внутренняя ошибка сервера ({type(e).__name__}), инцидент {incident}",
+                           "hint": "Это сбой на стороне планнера, а не в вызове. Сообщите человеку номер инцидента; не повторяйте вызов вслепую."},
                           ensure_ascii=False), True

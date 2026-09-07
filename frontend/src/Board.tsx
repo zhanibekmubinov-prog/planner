@@ -1,24 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { canEdit, Direction, dirColor, isOverdue, post, Project, projColor, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus } from "./api";
+import { canEdit, Direction, dirColor, errorText, isOverdue, post, Project, projColor, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toIn } from "./api";
 import { checklistProgress } from "./Checklist";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
 type Props = {
-  store: Store; direction: Direction | null; project: Project | null; looseOnly: boolean; selectedId: number | null;
+  store: Store; direction: Direction | null; project: Project | null; looseOnly: boolean; orphans?: boolean; selectedId: number | null;
   onSelect: (id: number | null) => void; onEditDirection: (d: Direction) => void; onOpenDirection: (d: Direction) => void;
   onEditProject: (p: Project) => void; onShare: () => void;
   onOpenMindmap: (id: number) => void; onMindmaps: (directionId: number | null) => void;
 };
 
-const toIn = (t: Task): TaskIn => ({
-  title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
-  deadline: t.deadline ?? null, next_check_at: t.next_check_at ?? null,
-  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: t.project_id ?? null,
-  checklist: t.checklist ?? [],
-});
-
-export default function Board({ store, direction, project, looseOnly, selectedId, onSelect, onEditDirection, onOpenDirection, onEditProject, onShare, onOpenMindmap, onMindmaps }: Props) {
+export default function Board({ store, direction, project, looseOnly, orphans = false, selectedId, onSelect, onEditDirection, onOpenDirection, onEditProject, onShare, onOpenMindmap, onMindmaps }: Props) {
   const [filter, setFilter] = useState<TaskStatus | "all">("all");
   const [hideDone, setHideDone] = useState(false);
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
@@ -28,11 +21,12 @@ export default function Board({ store, direction, project, looseOnly, selectedId
   const tasks = useMemo(
     () => store.tasks.filter((t) => {
       if (project) return t.project_id === project.id;
+      if (orphans) return t.directions.length === 0;                       // Н1: «Без направления» — ни одного живого направления
       if (!direction) return true;
       if (!t.directions.some((d) => d.id === direction.id)) return false;
-      return looseOnly ? !t.project_id : true;
+      return looseOnly ? !t.project_id || !store.projects.some((p) => p.id === t.project_id) : true;   // проект в корзине = без проекта
     }),
-    [store.tasks, direction, project, looseOnly],
+    [store.tasks, store.projects, direction, project, looseOnly, orphans],
   );
   // Право писать на эту доску: своё или открытое на редактирование
   const editable = project ? canEdit(project.access) : direction ? canEdit(direction.access) && direction.access !== "via" : true;
@@ -55,7 +49,7 @@ export default function Board({ store, direction, project, looseOnly, selectedId
       } satisfies TaskIn);
       await store.reloadTasks();
       return true;
-    } catch (e) { store.setError(String(e)); return false; } finally { setBusy(false); }
+    } catch (e) { store.setError(errorText(e)); return false; } finally { setBusy(false); }
   }
 
   async function moveTask(id: number, status: TaskStatus) {
@@ -65,8 +59,8 @@ export default function Board({ store, direction, project, looseOnly, selectedId
     store.patchTask({ ...t, status });
     try {
       // исполнитель без права редактирования меняет только статус — отдельным запросом
-      store.patchTask(t.access === "assignee" ? await post<Task>(`/tasks/${id}/status`, { status }) : await put<Task>(`/tasks/${id}`, { ...toIn(t), status }));
-    } catch (e) { store.setError(String(e)); void store.reloadTasks(); }
+      store.patchTask(t.access === "assignee" ? await post<Task>(`/tasks/${id}/status`, { status }) : await put<Task>(`/tasks/${id}`, { ...toIn(t), status, updated_at: t.updated_at }));
+    } catch (e) { store.setError(errorText(e)); void store.reloadTasks(); }
   }
 
   return (
@@ -81,6 +75,7 @@ export default function Board({ store, direction, project, looseOnly, selectedId
           {direction && (project || looseOnly) && <span className="crumb-sep" aria-hidden="true">›</span>}
           {project ? <span className="crumb-cur"><span className="swatch" style={{ background: accent ?? undefined }} />{project.name}</span>
             : looseOnly ? <span className="crumb-cur muted">Без проекта</span>
+            : orphans ? <span className="crumb-cur"><span className="swatch hollow-swatch" />Без направления</span>
             : !direction ? "Все задачи" : null}
           {!direction && !project && null}
         </h2>
@@ -93,7 +88,7 @@ export default function Board({ store, direction, project, looseOnly, selectedId
           return <MindButton count={maps.length} onClick={async () => {
             if (maps.length === 1) onOpenMindmap(maps[0].id);
             else if (maps.length > 1) onMindmaps(direction.id);
-            else if (editable) { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); } }
+            else if (editable) { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(errorText(e)); } }
           }} />;
         })()}
         <span className="spacer" />
@@ -121,7 +116,7 @@ export default function Board({ store, direction, project, looseOnly, selectedId
 
       {tasks.length === 0 ? (
         <div className="state">
-          <h3>{project ? `В проекте «${project.name}» пока нет задач` : looseOnly ? "Задач без проекта нет" : direction ? `В направлении «${direction.name}» пока нет задач` : "Задач пока нет"}</h3>
+          <h3>{project ? `В проекте «${project.name}» пока нет задач` : looseOnly ? "Задач без проекта нет" : orphans ? "Задач без направления нет" : direction ? `В направлении «${direction.name}» пока нет задач` : "Задач пока нет"}</h3>
           <p>{editable ? "Добавьте первую — она появится в колонке «Бэклог»." : "Здесь появятся задачи, когда их добавит владелец."}</p>
           {!editable ? null : adding ? (
             <div style={{ width: 320 }}><NewTaskInput onSubmit={(t) => createTask("backlog", t)} onClose={() => setAdding(null)} /></div>
@@ -239,6 +234,7 @@ function TaskCard({ task, selected, showDirs, showProject, project, directions, 
         <span className="code mono">#{task.id}</span>
         <span className={`pri p${task.priority}`}>P{task.priority}</span>
         {showProject && project && <span className="tag proj-tag" title="Проект"><span className="dot" style={{ background: projColor(project, directions) }} />{project.name}</span>}
+        {showProject && !project && task.project_id != null && <span className="tag proj-tag muted" title="Проект задачи в корзине — вернуть можно из раздела «Корзина»">(проект в корзине)</span>}
         {shared && <span className="tag shared-tag" title={`Открыл ${task.owner?.name ?? "коллега"} · ${task.access === "edit" ? "редактирование" : "просмотр"}`}>⇄ {task.owner?.name?.split(" ")[0] ?? ""}</span>}
         {task.deadline && <span className={`mono ${overdue ? "over" : ""}`}>{overdue ? "⚑ " : ""}до {showDate(task.deadline)}</span>}
         {task.next_check_at && <span className={`mono ${checkDue ? "warn" : ""}`}>⟳ {showDate(task.next_check_at)}</span>}

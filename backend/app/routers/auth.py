@@ -97,7 +97,9 @@ async def callback(code: str = Query(...), state: str = Query(...), db: Session 
     if settings.allowed_domains and email.split("@")[-1] not in settings.allowed_domains:
         raise HTTPException(403, f"домен {email.split('@')[-1]} не разрешён")
 
-    user = db.scalar(select(models.User).where((models.User.ms_oid == oid) | (models.User.email == email)))
+    cond = models.User.email == email
+    if oid: cond = cond | (models.User.ms_oid == oid)   # Н3: без oid условие «ms_oid IS NULL» совпало бы с любым приглашённым
+    user = db.scalar(select(models.User).where(cond))
     if not user:
         user = models.User(email=email, name=name, ms_oid=oid, is_admin=(email == settings.owner_email.lower()))
         db.add(user)

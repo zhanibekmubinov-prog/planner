@@ -1,10 +1,10 @@
 // Единое хранилище данных: загружает справочники и задачи, отдаёт функции перезагрузки.
 import { useCallback, useEffect, useState } from "react";
-import { api, Direction, MindMap, Person, Project, SharedWithMe, Task, Tool, User } from "./api";
+import { api, Direction, errorText, MindMap, Person, Project, SharedWithMe, Task, Tool, TrashOut, User } from "./api";
 
 export type Store = {
   me: User | null; directions: Direction[]; projects: Project[]; tasks: Task[]; inbox: Task[]; people: Person[]; tools: Tool[]; mindmaps: MindMap[];
-  shared: SharedWithMe[];
+  shared: SharedWithMe[]; trash: TrashOut | null;
   loading: boolean; error: string | null;
   reload: () => Promise<void>;
   reloadTasks: () => Promise<void>;
@@ -14,6 +14,7 @@ export type Store = {
   reloadPeople: () => Promise<void>;
   reloadTools: () => Promise<void>;
   reloadMindmaps: () => Promise<void>;
+  reloadTrash: () => Promise<void>;
   reloadMe: () => Promise<void>;
   setMe: (u: User) => void;
   patchMindmap: (m: MindMap) => void;
@@ -28,13 +29,15 @@ export function useStore(): Store {
   const [people, setPeople] = useState<Person[]>([]);
   const [tools, setTools] = useState<Tool[]>([]);
   const [mindmaps, setMindmaps] = useState<MindMap[]>([]);
+  const [trash, setTrash] = useState<TrashOut | null>(null);
   const [me, setMe] = useState<User | null>(null);
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Ошибка показывается понятно (4xx — отказ сервера, иначе — связь) и гаснет после следующей удачной загрузки (Н2)
   const guard = useCallback(async (fn: () => Promise<void>) => {
-    try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    try { await fn(); setError(null); } catch (e) { setError(errorText(e)); }
   }, []);
 
   const reloadTasks = useCallback(() => guard(async () => setAllTasks(await api<Task[]>("/tasks"))), [guard]);
@@ -45,12 +48,14 @@ export function useStore(): Store {
   const reloadPeople = useCallback(() => guard(async () => setPeople(await api<Person[]>("/people"))), [guard]);
   const reloadTools = useCallback(() => guard(async () => setTools(await api<Tool[]>("/tools"))), [guard]);
   const reloadMindmaps = useCallback(() => guard(async () => setMindmaps(await api<MindMap[]>("/mindmaps"))), [guard]);
+  // Корзина — вспомогательный раздел: если бэкенд её ещё не отдаёт, молчим, а не красим плашку
+  const reloadTrash = useCallback(async () => { try { setTrash(await api<TrashOut>("/trash")); } catch { setTrash(null); } }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
-    await Promise.all([reloadMe(), reloadDirections(), reloadProjects(), reloadTasks(), reloadPeople(), reloadTools(), reloadMindmaps(), reloadShared()]);
+    await Promise.all([reloadMe(), reloadDirections(), reloadProjects(), reloadTasks(), reloadPeople(), reloadTools(), reloadMindmaps(), reloadShared(), reloadTrash()]);
     setLoading(false);
-  }, [reloadMe, reloadDirections, reloadProjects, reloadTasks, reloadPeople, reloadTools, reloadMindmaps, reloadShared]);
+  }, [reloadMe, reloadDirections, reloadProjects, reloadTasks, reloadPeople, reloadTools, reloadMindmaps, reloadShared, reloadTrash]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -64,5 +69,5 @@ export function useStore(): Store {
   const inbox = allTasks.filter((t) => me && t.owner && t.owner.id !== me.id && (t.assigned_to_me || t.access === "assignee"));
   const patchMindmap = useCallback((m: MindMap) => setMindmaps((prev) => prev.map((x) => (x.id === m.id ? m : x))), []);
 
-  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, loading, error, reload, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadMe, setMe, patchTask, patchMindmap, setError };
+  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, trash, loading, error, reload, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchMindmap, setError };
 }

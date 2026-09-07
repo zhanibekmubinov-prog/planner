@@ -42,7 +42,6 @@ export default function Checklist({ items, onChange, readOnly }: Props) {
                 onChange={(e) => patch(i.id, { done: e.target.checked })} />
               <input className="ck-text" value={i.text} readOnly={readOnly} aria-label="Текст пункта"
                 onChange={(e) => patch(i.id, { text: e.target.value })}
-                onBlur={(e) => { if (!e.target.value.trim()) remove(i.id); }}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }} />
               {!readOnly && <button type="button" className="ck-del" onClick={() => remove(i.id)} title="Убрать пункт" aria-label={`Убрать пункт: ${i.text}`}>×</button>}
             </li>

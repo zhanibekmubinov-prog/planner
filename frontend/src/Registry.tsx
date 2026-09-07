@@ -1,6 +1,6 @@
 // Справочники: Люди и Тулы. Простые таблицы с редактированием на месте.
 import { useEffect, useState } from "react";
-import { api, del, isOverdue, Person, PersonIn, PersonSummary, post, put, showDate, showDateTime, STATUS_LABEL, Tool, ToolIn, TOOL_TYPE_LABEL, ToolType } from "./api";
+import { api, del, errorText, isOverdue, Person, PersonIn, PersonSummary, post, put, showDate, showDateTime, STATUS_LABEL, Tool, ToolIn, TOOL_TYPE_LABEL, ToolType } from "./api";
 import { useConfirm } from "./confirm";
 import { Store } from "./store";
 
@@ -13,11 +13,11 @@ export function PeoplePage({ store, onOpenTask }: { store: Store; onOpenTask: (i
     try {
       if (id) await put(`/people/${id}`, form); else await post("/people", form);
       await store.reloadPeople(); setEditing(null);
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   }
   async function remove(p: Person) {
     if (!(await confirm(`Удалить ${p.name} из списка? Если на этого человека есть поручения, удаление не пройдёт.`, { danger: true }))) return;
-    try { await del(`/people/${p.id}`); await store.reloadPeople(); } catch (e) { store.setError(String(e)); }
+    try { await del(`/people/${p.id}`); await store.reloadPeople(); } catch (e) { store.setError(errorText(e)); }
   }
 
   return (
@@ -57,7 +57,7 @@ export function PeoplePage({ store, onOpenTask }: { store: Store; onOpenTask: (i
 /** Сводка по человеку: что я ему поручил и как идёт. */
 export function PersonSummaryModal({ store, person, onClose, onOpenTask }: { store: Store; person: Person; onClose: () => void; onOpenTask: (id: number) => void }) {
   const [data, setData] = useState<PersonSummary | null>(null);
-  useEffect(() => { api<PersonSummary>(`/people/${person.id}/summary`).then(setData).catch((e) => store.setError(String(e))); }, [person.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { api<PersonSummary>(`/people/${person.id}/summary`).then(setData).catch((e) => store.setError(errorText(e))); }, [person.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const pct = data && data.total ? Math.round((data.done / data.total) * 100) : 0;
   return (
     <div className="backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -131,14 +131,16 @@ export function ToolsPage({ store }: { store: Store }) {
 
   async function save(form: Omit<ToolIn, "task_ids" | "direction_ids">, tool?: Tool) {
     try {
-      const body: ToolIn = { ...form, task_ids: tool ? usage(tool.id).map((t) => t.id) : [], direction_ids: [] };
+      // С8: бэкенд не отдаёт direction_ids у тула и при PUT с пустым списком снимает привязки к направлениям.
+      // Пока ToolOut без direction_ids — передаём то, что есть (tool.direction_ids появится, когда бэкенд его добавит).
+      const body: ToolIn = { ...form, task_ids: tool ? usage(tool.id).map((t) => t.id) : [], direction_ids: tool?.direction_ids ?? [] };
       if (tool) await put(`/tools/${tool.id}`, body); else await post("/tools", body);
       await store.reloadTools(); await store.reloadTasks(); setEditing(null);
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   }
   async function remove(t: Tool) {
     if (!(await confirm(`Тул «${t.name}» будет удалён и отвязан от всех задач.`, { danger: true, okLabel: "Удалить тул" }))) return;
-    try { await del(`/tools/${t.id}`); await store.reloadTools(); await store.reloadTasks(); } catch (e) { store.setError(String(e)); }
+    try { await del(`/tools/${t.id}`); await store.reloadTools(); await store.reloadTasks(); } catch (e) { store.setError(errorText(e)); }
   }
 
   return (

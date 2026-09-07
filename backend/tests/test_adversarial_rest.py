@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app import models
 from app.config import Settings
-from tests.conftest import NUR_EMAIL, AIDA_EMAIL, count, link_person, ok
+from tests.conftest import API_TOKEN, SESSION_SECRET, NUR_EMAIL, AIDA_EMAIL, count, link_person, ok
 
 
 # ═══════════════════════ Критично ═══════════════════════
@@ -51,7 +51,7 @@ def test_K2_default_secrets_rejected_on_startup():
 
 def test_K2_jwt_without_exp_rejected(client, jack):
     """К2 (доп.). JWT без exp принимается — бессрочная сессия. Ожидается 401."""
-    tok = jwt.encode({"sub": str(jack.id)}, "test-secret", algorithm="HS256")
+    tok = jwt.encode({"sub": str(jack.id)}, SESSION_SECRET, algorithm="HS256")
     r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 401, f"JWT без exp принят ({r.status_code}) — сессия бессрочная"
 
@@ -257,7 +257,7 @@ def test_S3_duplicate_tool_ids_not_500(client, api, jack, method):
 @pytest.mark.parametrize("payload", [{"email": "x", "exp": 4102444800}, {"sub": "abc", "exp": 4102444800}], ids=["без sub", "sub='abc'"])
 def test_S4_jwt_bad_sub_is_401_not_500(client, payload):
     """С4. JWT без sub / с нечисловым sub → int(data['sub']) падает → 500. Ожидается 401."""
-    tok = jwt.encode(payload, "test-secret", algorithm="HS256")
+    tok = jwt.encode(payload, SESSION_SECRET, algorithm="HS256")
     r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 401, f"некорректный JWT дал {r.status_code} вместо 401"
 
@@ -425,32 +425,44 @@ def test_ok_assignee_can_change_status_and_report_only(client, api, db, jack, ai
 
 
 def test_ok_project_delete_keeps_tasks_in_direction(client, api, jack, nur):
-    """Регрессия. Удаление проекта: задачи остаются в направлении (project_id=None), шары на проект перестают действовать."""
+    """Регрессия (v0.8: soft-delete). Удаление проекта в корзину: задачи остаются в направлении, проект пропадает из
+    списка проектов (project_id у задачи сохраняется для восстановления — фронт трактует неизвестный id как «без проекта»),
+    шары на проект снимаются. После удаления навсегда (DELETE /trash/project/{id}) project_id = None."""
     d = api.direction(jack, "Д"); p = api.project(jack, d["id"], "П")
     t = api.task(jack, "в проекте", project_id=p["id"])
     api.share(jack, "project", p["id"], NUR_EMAIL, "edit")
     ok(client.delete(f"/api/projects/{p['id']}", headers=jack.h), 204)
     after = api.get_task(jack, t["id"])
-    assert after["project_id"] is None and [x["id"] for x in after["directions"]] == [d["id"]]
+    assert after["project_id"] in (None, p["id"]) and [x["id"] for x in after["directions"]] == [d["id"]]
+    assert p["id"] not in [x["id"] for x in ok(client.get("/api/projects", headers=jack.h))]
     assert ok(client.get("/api/tasks", headers=nur.h)) == []
+    ok(client.delete(f"/api/trash/project/{p['id']}", headers=jack.h), 204)
+    after = api.get_task(jack, t["id"])
+    assert after["project_id"] is None and [x["id"] for x in after["directions"]] == [d["id"]]
 
 
 def test_ok_task_delete_cascades(client, api, db, jack):
-    """Регрессия. Удаление задачи каскадно удаляет напоминания, поручения и майндмапы задачи."""
+    """Регрессия (v0.8: soft-delete). DELETE /tasks — в корзину, всё остаётся; каскад (напоминания, поручения, майндмапы)
+    срабатывает при удалении навсегда через DELETE /trash/task/{id}."""
     p = api.person(jack, "Асхат")
     t = api.task(jack, "удаляемая")
     rm = ok(client.post("/api/reminders", json={"task_id": t["id"], "fire_at": "2030-01-01T09:00:00Z"}, headers=jack.h), 201)
     dl = ok(client.post("/api/delegations", json={"task_id": t["id"], "person_id": p["id"]}, headers=jack.h), 201)
     mm = ok(client.post("/api/mindmaps", json={"title": "mmt", "task_id": t["id"], "data": {}}, headers=jack.h), 201)
     ok(client.delete(f"/api/tasks/{t['id']}", headers=jack.h), 204)
+    assert db.get(models.Reminder, rm["id"]) is not None and db.get(models.Delegation, dl["id"]) is not None, "в корзине всё должно сохраняться"
+    ok(client.delete(f"/api/trash/task/{t['id']}", headers=jack.h), 204)
+    db.expire_all()
     assert db.get(models.Reminder, rm["id"]) is None and db.get(models.Delegation, dl["id"]) is None and db.get(models.MindMap, mm["id"]) is None
 
 
 def test_ok_direction_delete_nulls_mindmap_direction(client, api, db, jack):
-    """Регрессия. Удаление направления обнуляет mindmap.direction_id, сам майндмап остаётся."""
+    """Регрессия (v0.8: soft-delete). Удаление направления навсегда (корзина → DELETE /trash/direction/{id})
+    обнуляет mindmap.direction_id, сам майндмап остаётся."""
     d = api.direction(jack, "Д")
     mm = ok(client.post("/api/mindmaps", json={"title": "mm", "direction_id": d["id"], "data": {}}, headers=jack.h), 201)
     ok(client.delete(f"/api/directions/{d['id']}", headers=jack.h), 204)
+    ok(client.delete(f"/api/trash/direction/{d['id']}", headers=jack.h), 204)
     db.expire_all()
     obj = db.get(models.MindMap, mm["id"])
     assert obj is not None and obj.direction_id is None
@@ -469,7 +481,7 @@ def test_ok_enum_validation_and_404(client, api, jack):
 
 def test_ok_api_token_auth(client, jack):
     """Регрессия. X-API-Token верный → владелец; неверный → 401; без токена → 401."""
-    me = ok(client.get("/api/auth/me", headers={"X-API-Token": "tok"}))
+    me = ok(client.get("/api/auth/me", headers={"X-API-Token": API_TOKEN}))
     assert me["email"] == "jack@cis.kz" and me["is_admin"] is True
-    assert client.get("/api/auth/me", headers={"X-API-Token": "tokk"}).status_code == 401
+    assert client.get("/api/auth/me", headers={"X-API-Token": API_TOKEN + "x"}).status_code == 401
     assert client.get("/api/auth/me").status_code == 401

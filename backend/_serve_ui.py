@@ -1,6 +1,6 @@
 """Локальный стенд для скриншотов: бэкенд на sqlite + собранный фронт (dist) с одного порта. Не для прода."""
 import os, sys
-os.environ.update({"DATABASE_URL": "sqlite:///./_ui.db", "API_TOKEN": "tok", "OWNER_EMAIL": "jack@cis.kz", "SCHEDULER_ENABLED": "false", "ALLOWED_EMAIL_DOMAINS": "cis.kz"})
+os.environ.update({"DATABASE_URL": "sqlite:///./_ui.db", "API_TOKEN": "stand-api-token-0123456789", "SESSION_SECRET": "stand-session-secret-0123456789", "OWNER_EMAIL": "jack@cis.kz", "SCHEDULER_ENABLED": "false", "ALLOWED_EMAIL_DOMAINS": "cis.kz"})
 if os.path.exists("_ui.db"): os.remove("_ui.db")
 from fastapi.staticfiles import StaticFiles
 from app.db import Base, engine, SessionLocal

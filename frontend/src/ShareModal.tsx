@@ -1,7 +1,8 @@
 // Окно «Поделиться»: кому открыт объект (направление / проект / задача), добавить по почте, право смотреть/редактировать, отозвать.
 import { useEffect, useMemo, useState } from "react";
-import { api, del, ENTITY_LABEL, Permission, PERMISSION_LABEL, post, put, Share, ShareEntity, UserBrief } from "./api";
+import { api, del, ENTITY_LABEL, errorText, Permission, PERMISSION_LABEL, post, put, Share, ShareEntity, UserBrief } from "./api";
 import { useConfirm } from "./confirm";
+import { useEscape } from "./layers";
 import { Store } from "./store";
 
 export type ShareTarget = { type: ShareEntity; id: number; name: string; color?: string };
@@ -25,13 +26,10 @@ export default function ShareModal({ store, target, onClose }: { store: Store; t
     try {
       const [s, p] = await Promise.all([api<Share[]>(`/shares?entity_type=${target.type}&entity_id=${target.id}`), api<UserBrief[]>("/shares/people")]);
       setItems(s); setPeople(p);
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   };
   useEffect(() => { void load(); }, [target.type, target.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscape(onClose);   // С9: Esc закрывает только это окно, карточка под ним остаётся
 
   const q = email.trim().toLowerCase();
   const suggestions = useMemo(() => {
@@ -47,15 +45,15 @@ export default function ShareModal({ store, target, onClose }: { store: Store; t
       await post<Share>("/shares", { entity_type: target.type, entity_id: target.id, email: v, permission: perm });
       setEmail(""); await load(); await store.reloadShared();
     } catch (e) {
-      const m = String(e); setErr(m.replace(/^\d+\s*/, "").replace(/^\{"detail":"(.*)"\}$/, "$1"));
+      const m = errorText(e); setErr(m.replace(/^\d+\s*/, "").replace(/^\{"detail":"(.*)"\}$/, "$1"));
     } finally { setBusy(false); }
   }
   async function setPermission(s: Share, permission: Permission) {
-    try { await put<Share>(`/shares/${s.id}`, { permission }); await load(); } catch (e) { store.setError(String(e)); }
+    try { await put<Share>(`/shares/${s.id}`, { permission }); await load(); } catch (e) { store.setError(errorText(e)); }
   }
   async function revoke(s: Share) {
     if (!(await confirm(`Закрыть доступ для ${s.user.name}?`, { danger: true, okLabel: "Закрыть доступ" }))) return;
-    try { await del(`/shares/${s.id}`); await load(); } catch (e) { store.setError(String(e)); }
+    try { await del(`/shares/${s.id}`); await load(); } catch (e) { store.setError(errorText(e)); }
   }
 
   return (

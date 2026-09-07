@@ -1,13 +1,13 @@
 // «Мне поручено»: задачи, которые поручили другие. Исполнитель меняет статус и пишет отчёт.
 import { useEffect, useState } from "react";
-import { api, Delegation, isOverdue, post, put, showDate, showDateTime, STATUS_LABEL, STATUSES, Task, TaskStatus } from "./api";
+import { api, Delegation, errorText, isOverdue, post, put, showDate, showDateTime, STATUS_LABEL, STATUSES, Task, TaskStatus } from "./api";
 import { Store } from "./store";
 
 export default function InboxPage({ store }: { store: Store }) {
   const [delegs, setDelegs] = useState<Delegation[]>([]);
   const [open, setOpen] = useState<number | null>(null);
 
-  const load = async () => { try { setDelegs(await api<Delegation[]>("/delegations?mine=true")); } catch (e) { store.setError(String(e)); } };
+  const load = async () => { try { setDelegs(await api<Delegation[]>("/delegations?mine=true")); } catch (e) { store.setError(errorText(e)); } };
   useEffect(() => { void load(); }, [store.inbox.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const byTask = new Map<number, Delegation>();
@@ -55,7 +55,7 @@ function InboxDetail({ store, task, delegation, onChanged }: { store: Store; tas
 
   async function setStatus(status: TaskStatus) {
     setBusy(true);
-    try { store.patchTask(await post<Task>(`/tasks/${task.id}/status`, { status })); } catch (e) { store.setError(String(e)); } finally { setBusy(false); }
+    try { store.patchTask(await post<Task>(`/tasks/${task.id}/status`, { status })); } catch (e) { store.setError(errorText(e)); } finally { setBusy(false); }
   }
   async function saveReport(done: boolean) {
     if (!delegation) return;
@@ -64,7 +64,7 @@ function InboxDetail({ store, task, delegation, onChanged }: { store: Store; tas
       await put(`/delegations/${delegation.id}/report`, { status: done ? "done" : "open", report: report.trim() || null });
       if (done && task.status !== "done") store.patchTask(await post<Task>(`/tasks/${task.id}/status`, { status: "done" }));
       onChanged();
-    } catch (e) { store.setError(String(e)); } finally { setBusy(false); }
+    } catch (e) { store.setError(errorText(e)); } finally { setBusy(false); }
   }
 
   return (

@@ -1,8 +1,9 @@
 // Редактор майндмапа в духе MindNode: центральная тема, автоматическая раскладка влево/вправо,
 // плавные ветви, цвет ветви первого уровня наследуется потомками. Автосохранение.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { del, DIRECTION_COLORS, dirColor, MIND_COLOR, MindMap, MindMapIn, MindNode, newNodeId, put } from "./api";
+import { del, DIRECTION_COLORS, dirColor, errorText, MIND_COLOR, MindMap, MindMapIn, MindNode, newNodeId, put } from "./api";
 import { useConfirm } from "./confirm";
+import { layerCount, useDirtyFlag } from "./layers";
 import { Store } from "./store";
 
 type Props = { store: Store; map: MindMap; onBack: () => void; onDeleted: () => void; onOpenTask?: (taskId: number) => void };
@@ -103,6 +104,12 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   const areaRef = useRef<HTMLDivElement>(null);
   const timer = useRef<number | null>(null);
   const confirm = useConfirm();
+  // С5: последняя версия — в ref, чтобы досохранить при уходе со страницы; revision — чтобы ответ на старую версию не гасил «изменено»
+  const latest = useRef({ tree, title });
+  const dirtyRef = useRef(false);
+  const revision = useRef(0);
+  const storeRef = useRef(store); storeRef.current = store;
+  useDirtyFlag(dirty);
 
   const laid = useMemo(() => layout(tree), [tree]);
   const byId = useMemo(() => new Map(laid.map((l) => [l.node.id, l])), [laid]);
@@ -115,24 +122,34 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     setView({ x: el.clientWidth / 2, y: el.clientHeight / 2, k: 1 });
   }, [map.id]);
 
-  const commit = useCallback((next: MindNode, nextTitle?: string) => {
-    setTree(next); if (nextTitle !== undefined) setTitle(nextTitle); setDirty(true);
-  }, []);
+  const flush = useCallback(async () => {
+    if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
+    if (!dirtyRef.current) return;
+    const { tree: tr, title: ti } = latest.current; const rev = revision.current;
+    setSaving(true);
+    try {
+      const body: MindMapIn = { title: ti.trim() || tr.text || "Майндмап", direction_id: map.direction_id ?? null, task_id: map.task_id ?? null, data: tr };
+      storeRef.current.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}`, body));
+      if (revision.current === rev) { dirtyRef.current = false; setDirty(false); }
+      else { timer.current = window.setTimeout(() => void flush(), 200); }   // правили во время запроса — дошлём
+    } catch (e) { storeRef.current.setError(errorText(e)); } finally { setSaving(false); }
+  }, [map.id, map.direction_id, map.task_id]);
 
-  // автосохранение
-  useEffect(() => {
-    if (!dirty) return;
+  const schedule = useCallback(() => {
+    dirtyRef.current = true; revision.current++; setDirty(true);
     if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(async () => {
-      setSaving(true);
-      try {
-        const body: MindMapIn = { title: title.trim() || tree.text || "Майндмап", direction_id: map.direction_id ?? null, task_id: map.task_id ?? null, data: tree };
-        store.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}`, body));
-        setDirty(false);
-      } catch (e) { store.setError(String(e)); } finally { setSaving(false); }
-    }, 800);
-    return () => { if (timer.current) window.clearTimeout(timer.current); };
-  }, [tree, title, dirty, map.id, map.direction_id, map.task_id, store]);
+    timer.current = window.setTimeout(() => void flush(), 800);
+  }, [flush]);
+
+  const commit = useCallback((next: MindNode, nextTitle?: string) => {
+    setTree(next); latest.current = { ...latest.current, tree: next };
+    if (nextTitle !== undefined) { setTitle(nextTitle); latest.current = { ...latest.current, title: nextTitle }; }
+    schedule();
+  }, [schedule]);
+
+  // С5: уход со страницы (Назад, Esc, другой раздел) — досохраняем то, что не успел таймер
+  useEffect(() => () => { if (dirtyRef.current) void flush(); }, [flush]);
+  const back = () => { void flush(); onBack(); };
 
   /* --- редактирование --- */
   function addChild(parentId: string) {
@@ -155,7 +172,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     if (id === tree.id) return;
     const node = findNode(tree, id); if (!node) return;
     const n = countAll(node) - 1;
-    if (n > 0 && !(await confirm(`Удалить узел «${node.text || "…"}» и ${n} вложенных?`, { danger: true, okLabel: "Удалить ветку" }))) return;
+    if (n > 0 && !(await confirm(`Узел «${node.text || "…"}» и ${n} вложенных исчезнут с карты.`, { title: "Удалить ветку?", danger: true, okLabel: "Удалить ветку" }))) return;
     const parent = findParent(tree, id);
     commit(mapTree(tree, (x) => (x.id === parent?.id ? { ...x, children: x.children.filter((c) => c.id !== id) } : x)));
     setSelected(parent?.id ?? null); setEditing(null);
@@ -181,11 +198,14 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (editing) return; // в режиме ввода — свои обработчики
-      if (!selected) { if (e.key === "Escape") onBack(); return; }
+      if (layerCount() > 0) return;   // С4: открыт диалог/меню — клавиши ему, а не карте
+      if (!selected) { if (e.key === "Escape") back(); return; }
       if (e.key === "Tab") { e.preventDefault(); addChild(selected); }
       else if (e.key === "Enter") { e.preventDefault(); if (e.shiftKey || selected === tree.id) setEditing(selected); else addSibling(selected); }
       else if (e.key === "F2") { e.preventDefault(); setEditing(selected); }
-      else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); void removeNode(selected); }
+      else if (e.key === "Delete") { e.preventDefault(); void removeNode(selected); }
+      // С4: Backspace на листе — не удаление, а правка текста (как в текстовом редакторе); ветку — только Delete
+      else if (e.key === "Backspace") { e.preventDefault(); const n = findNode(tree, selected); if (n && n.children.length === 0 && selected !== tree.id) setEditing(selected); else void removeNode(selected); }
       else if (e.key === " ") { e.preventDefault(); toggleCollapse(selected); }
       else if (e.key === "Escape") { setSelected(null); }
     };
@@ -216,12 +236,13 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     try {
       const body: MindMapIn = { title: title.trim() || tree.text || "Майндмап", direction_id: directionId, task_id: map.task_id ?? null, data: tree };
       store.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}`, body));
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   }
 
   async function removeMap() {
-    if (!(await confirm(`Майндмап «${title}» будет удалён целиком.`, { danger: true, okLabel: "Удалить майндмап" }))) return;
-    try { await del(`/mindmaps/${map.id}`); await store.reloadMindmaps(); onDeleted(); } catch (e) { store.setError(String(e)); }
+    if (!(await confirm(`Майндмап «${title}» будет удалён целиком — все ${countAll(tree)} узлов. Корзины у майндмапов нет.`, { title: "Удалить майндмап?", danger: true, okLabel: "Удалить майндмап" }))) return;
+    dirtyRef.current = false; if (timer.current) window.clearTimeout(timer.current);
+    try { await del(`/mindmaps/${map.id}`); await store.reloadMindmaps(); onDeleted(); } catch (e) { store.setError(errorText(e)); }
   }
 
   const edgePath = (c: Laid) => {
@@ -234,9 +255,9 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   return (
     <div className="mm" style={{ ["--mind" as string]: MIND_COLOR }}>
       <div className="mm-bar">
-        <button className="btn ghost" onClick={onBack}>← Назад</button>
+        <button className="btn ghost" onClick={back}>← Назад</button>
         <span className="mm-glyph" aria-hidden="true" />
-        <input className="mm-title" value={title} onChange={(e) => { setTitle(e.target.value); setDirty(true); }} placeholder="Название майндмапа" />
+        <input className="mm-title" value={title} onChange={(e) => { setTitle(e.target.value); latest.current = { ...latest.current, title: e.target.value }; schedule(); }} placeholder="Название майндмапа" />
         <label className="mm-dir" title="Направление майндмапа">
           <span className="dot" style={{ background: direction ? dirColor(direction) : "var(--line-strong)" }} />
           <select className="select" value={map.direction_id ?? ""} onChange={(e) => void relink(e.target.value === "" ? null : Number(e.target.value))}>

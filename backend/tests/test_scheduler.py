@@ -218,3 +218,74 @@ def test_ok_digest_sent_once_per_day(db, api, jack, outbox):
     res = asyncio.run(scheduler.send_digest(db, jack.obj, t9))
     assert res.get("telegram") == "ok" and _log_actions(db, "Digest", jack.id) == ["sent"]
     assert scheduler.digest_due(db, t9 + timedelta(hours=1), jack.obj) is False
+
+
+# ═══════════════════════ v0.8: claim, backoff, housekeeping ═══════════════════════
+
+def test_v08_claim_prevents_double_send(db, api, jack, outbox, monkeypatch):
+    """С9. Claim-before-send: если запись уже занята (sent_at выставлен параллельным экземпляром), второй проход её не шлёт."""
+    t = api.task(jack, "Один раз")
+    r = _reminder(db, t["id"], NOW - timedelta(minutes=1))
+    orig = scheduler._claim
+    calls = []
+
+    def claim(db_, model, id_, col, now):
+        calls.append(id_)
+        return orig(db_, model, id_, col, now) if len(calls) == 1 else False
+    monkeypatch.setattr(scheduler, "_claim", claim)
+    assert asyncio.run(scheduler.process_due(db, NOW)) == 1
+    assert len(outbox) == 1
+
+
+def test_v08_transient_failure_retried_with_backoff(db, api, jack, outbox, monkeypatch):
+    """С6. Временная ошибка (Telegram 500): sent_at снимается, повтор не раньше чем через 5 минут, затем успех."""
+    state = {"fail": True}
+
+    async def flaky(text, chat_id=None):
+        if state["fail"]: raise NotifyError("Telegram 500: internal")
+        outbox.append(("telegram", chat_id, text))
+    monkeypatch.setattr(scheduler, "send_telegram", flaky)
+    t = api.task(jack, "Ретрай")
+    r = _reminder(db, t["id"], NOW - timedelta(minutes=1))
+    asyncio.run(scheduler.process_due(db, NOW)); db.refresh(r)
+    assert r.sent_at is None and _log_actions(db, "Reminder", r.id) == ["failed"]
+    asyncio.run(scheduler.process_due(db, NOW + timedelta(minutes=1)))
+    assert _log_actions(db, "Reminder", r.id) == ["failed"], "повтор раньше backoff"
+    state["fail"] = False
+    asyncio.run(scheduler.process_due(db, NOW + timedelta(minutes=6))); db.refresh(r)
+    assert r.sent_at is not None and _log_actions(db, "Reminder", r.id) == ["failed", "sent"] and len(outbox) == 1
+
+
+def test_v08_digest_after_three_failures_stops(db, api, jack, outbox, monkeypatch):
+    """С7. После 3 неудач за день дайджест на сегодня считается сделанным."""
+    async def boom(text, chat_id=None): raise NotifyError("Telegram 400: chat not found")
+    monkeypatch.setattr(scheduler, "send_telegram", boom)
+    monkeypatch.setattr(settings, "ms_tenant_id", "")
+    jack.obj.telegram_chat_id = "777"; db.commit()
+    t9 = datetime(2026, 9, 4, 9, 0, tzinfo=scheduler.TZ).astimezone(timezone.utc)
+    for i in range(3):
+        asyncio.run(scheduler.send_digest(db, jack.obj, t9 + timedelta(minutes=20 * i)))
+    assert scheduler.digest_due(db, t9 + timedelta(hours=1, minutes=30), jack.obj) is False
+
+
+def test_v08_reminder_for_trashed_task_gave_up(db, api, jack, outbox):
+    """Soft-delete: напоминание по задаче в корзине не отправляется — gave_up, sent_at выставлен."""
+    t = api.task(jack, "В корзине")
+    r = _reminder(db, t["id"], NOW - timedelta(minutes=1))
+    ok(api.c.delete(f"/api/tasks/{t['id']}", headers=jack.h), 204)
+    asyncio.run(scheduler.process_due(db, NOW)); db.refresh(r)
+    assert outbox == [] and r.sent_at is not None and _log_actions(db, "Reminder", r.id) == ["gave_up"]
+
+
+def test_v08_housekeeping_runs_once_a_day(db, monkeypatch):
+    """Housekeeping: purge_trash и cleanup_oauth вызываются один раз в сутки."""
+    calls = []
+    import app.trash as trash
+    from app.routers import mcp_oauth
+    monkeypatch.setattr(trash, "purge_trash", lambda db_, days=30: calls.append(("trash", days)) or {})
+    monkeypatch.setattr(mcp_oauth, "cleanup_oauth", lambda db_, now=None: calls.append(("oauth",)) or {})
+    monkeypatch.setattr(scheduler, "_last_housekeeping", None)
+    scheduler.housekeeping(db, NOW); scheduler.housekeeping(db, NOW + timedelta(hours=1))
+    assert calls == [("trash", 30), ("oauth",)], calls
+    scheduler.housekeeping(db, NOW + timedelta(days=1))
+    assert len(calls) == 4

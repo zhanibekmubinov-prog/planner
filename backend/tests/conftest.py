@@ -17,13 +17,17 @@ import pytest
 _TMP = Path(tempfile.mkdtemp(prefix="planner-tests-"))
 _DB = (_TMP / "test.db").as_posix()
 
+# v0.8: Settings отклоняет секреты короче 16 символов — в тестах используем эти константы
+API_TOKEN = "test-api-token-0123456789"
+SESSION_SECRET = "test-session-secret-0123456789"
+
 os.environ.update({
     "DATABASE_URL": f"sqlite:///{_DB}",
-    "API_TOKEN": "tok",
+    "API_TOKEN": API_TOKEN,
     "OWNER_EMAIL": "jack@cis.kz",
     "SCHEDULER_ENABLED": "false",
     "ALLOWED_EMAIL_DOMAINS": "cis.kz",
-    "SESSION_SECRET": "test-secret",
+    "SESSION_SECRET": SESSION_SECRET,
     # каналы выключены — тесты не ходят в сеть
     "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": "",
     "MS_TENANT_ID": "", "MS_CLIENT_ID": "", "MS_CLIENT_SECRET": "", "MS_MAILBOX": "", "MS_REDIRECT_URI": "",
@@ -99,7 +103,7 @@ def db():
 @pytest.fixture
 def jack(db):
     u = owner_user(db)  # владелец (OWNER_EMAIL), is_admin
-    return U(u, "tok")   # служебный API_TOKEN действует от имени владельца и в /mcp
+    return U(u, API_TOKEN)   # служебный API_TOKEN действует от имени владельца и в /mcp
 
 
 @pytest.fixture

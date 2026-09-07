@@ -1,8 +1,10 @@
 // Контекстное меню направления (правая кнопка мыши / кнопка «⋯») и окно переименования.
 // Никаких браузерных prompt/confirm: всё — свои окна.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { canEdit, del, Direction, DirectionIn, dirColor, MIND_COLOR, put } from "./api";
+import { canEdit, Direction, DirectionIn, dirColor, errorText, MIND_COLOR, put } from "./api";
 import { useConfirm } from "./confirm";
+import { useDeletion } from "./deletion";
+import { useEscape } from "./layers";
 import { MindGlyph } from "./MindMaps";
 import { Store } from "./store";
 
@@ -23,15 +25,17 @@ type Props = {
   onMindmaps: (d: Direction) => void; onEdit: (d: Direction) => void; onRename: (d: Direction) => void; onDeleted: (d: Direction) => void;
 };
 
-const bodyOf = (d: Direction): DirectionIn => ({ name: d.name, description: d.description ?? null, goal: d.goal ?? null, color: d.color ?? null, status: d.status });
+export const directionBody = (d: Direction): DirectionIn => ({ name: d.name, description: d.description ?? null, goal: d.goal ?? null, color: d.color ?? null, status: d.status });
 
 export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard, onNewProject, onShare, onMindmaps, onEdit, onRename, onDeleted }: Props) {
-  const d = anchor.direction;
+  // Н5: берём актуальный объект из стора, а не снимок на момент открытия меню
+  const d = store.directions.find((x) => x.id === anchor.direction.id) ?? anchor.direction;
   const editable = canEdit(d.access) && d.access !== "via";
   const owner = !d.access || d.access === "owner";
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: anchor.x, y: anchor.y });
   const confirm = useConfirm();
+  const { deleteDirection } = useDeletion(store);
 
   // Не вылезать за край экрана
   useLayoutEffect(() => {
@@ -40,22 +44,18 @@ export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard,
     setPos({ x: Math.max(8, Math.min(anchor.x, window.innerWidth - w - 8)), y: Math.max(8, Math.min(anchor.y, window.innerHeight - h - 8)) });
   }, [anchor]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey); window.addEventListener("resize", onClose);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("resize", onClose); };
-  }, [onClose]);
+  useEscape(onClose);
+  useEffect(() => { window.addEventListener("resize", onClose); return () => window.removeEventListener("resize", onClose); }, [onClose]);
 
   async function setStatus(status: Direction["status"]) {
     onClose();
-    try { await put<Direction>(`/directions/${d.id}`, { ...bodyOf(d), status }); await store.reloadDirections(); }
-    catch (e) { store.setError(String(e)); }
+    if (status === "archived" && !(await confirm(`Направление «${d.name}» уйдёт из левой панели и с карты вместе со своими проектами. Задачи останутся внутри. Вернуть — из раздела «Архив».`, { title: "Убрать в архив?", okLabel: "В архив" }))) return;
+    try { await put<Direction>(`/directions/${d.id}`, { ...directionBody(d), status }); await store.reloadDirections(); }
+    catch (e) { store.setError(errorText(e)); }
   }
   async function remove() {
     onClose();
-    if (!(await confirm(`Направление «${d.name}» будет удалено вместе с его проектами. Задачи останутся, но потеряют привязку к нему.`, { danger: true, okLabel: "Удалить направление" }))) return;
-    try { await del(`/directions/${d.id}`); await Promise.all([store.reloadDirections(), store.reloadProjects(), store.reloadTasks()]); onDeleted(d); }
-    catch (e) { store.setError(String(e)); }
+    if (await deleteDirection(d)) onDeleted(d);
   }
   const run = (fn: (d: Direction) => void) => () => { onClose(); fn(d); };
   const open = store.tasks.filter((t) => t.status !== "done" && t.directions.some((x) => x.id === d.id)).length;
@@ -79,7 +79,7 @@ export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard,
           {d.status === "active"
             ? <button role="menuitem" onClick={() => setStatus("paused")}>Поставить на паузу</button>
             : <button role="menuitem" onClick={() => setStatus("active")}>{d.status === "paused" ? "Возобновить" : "Вернуть из архива"}</button>}
-          {d.status !== "archived" && <button role="menuitem" onClick={() => setStatus("archived")}>В архив</button>}
+          {d.status !== "archived" && <button role="menuitem" onClick={() => setStatus("archived")}>В архив…</button>}
         </>}
         {owner && <>
           <hr />
@@ -95,18 +95,21 @@ export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard,
 export function RenameModal({ store, direction, onClose }: { store: Store; direction: Direction; onClose: () => void }) {
   const [name, setName] = useState(direction.name);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  useEscape(onClose);
   async function save() {
+    if (busyRef.current) return;
     const v = name.trim(); if (!v || v === direction.name) { onClose(); return; }
-    setBusy(true);
-    try { await put<Direction>(`/directions/${direction.id}`, { ...bodyOf(direction), name: v }); await store.reloadDirections(); await store.reloadTasks(); onClose(); }
-    catch (e) { store.setError(String(e)); } finally { setBusy(false); }
+    busyRef.current = true; setBusy(true);
+    try { await put<Direction>(`/directions/${direction.id}`, { ...directionBody(direction), name: v }); await store.reloadDirections(); await store.reloadTasks(); onClose(); }
+    catch (e) { store.setError(errorText(e)); } finally { busyRef.current = false; setBusy(false); }
   }
   return (
     <div className="backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label="Переименовать направление">
         <h3>Переименовать направление</h3>
         <input className="input" value={name} autoFocus onFocus={(e) => e.currentTarget.select()} onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") onClose(); }} />
+          onKeyDown={(e) => { if (e.key === "Enter") void save(); }} />
         <div className="foot">
           <button className="btn" onClick={onClose} disabled={busy}>Отмена</button>
           <button className="btn primary" onClick={save} disabled={busy || !name.trim()}>Сохранить</button>

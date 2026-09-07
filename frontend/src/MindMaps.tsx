@@ -1,6 +1,6 @@
 // Раздел «Майндмапы»: все карты — свободные, по направлениям, по задачам. Плюс общая кнопка-глиф.
 import { useState } from "react";
-import { Direction, dirColor, MIND_COLOR, MindMap, MindMapIn, post, showDateTime, Task } from "./api";
+import { Direction, dirColor, errorText, MIND_COLOR, MindMap, MindMapIn, post, showDateTime, Task } from "./api";
 import { Store } from "./store";
 
 /** Создать пустой майндмап и вернуть его. */
@@ -49,17 +49,19 @@ export default function MindMapsPage({ store, filterDirection, onOpen, onOpenTas
     if (!title.trim()) return;
     setBusy(true);
     try { const m = await createMindMap(store, title.trim(), { direction_id: linkDir === "" ? null : Number(linkDir) }); setCreating(false); setTitle(""); onOpen(m.id); }
-    catch (e) { store.setError(String(e)); } finally { setBusy(false); }
+    catch (e) { store.setError(errorText(e)); } finally { setBusy(false); }
   }
 
   const groups: { key: string; label: string; color?: string; items: MindMap[] }[] = [];
-  const free = maps.filter((m) => !m.direction_id && !m.task_id);
+  // С7: направление удалено (в корзине) — карта не пропадает, а показывается среди свободных
+  const known = new Set(store.directions.map((d) => d.id));
+  const free = maps.filter((m) => (!m.direction_id || !known.has(m.direction_id)) && !m.task_id);
   if (free.length) groups.push({ key: "free", label: "Свободные", items: free });
   for (const d of store.directions) {
     const items = maps.filter((m) => m.direction_id === d.id);
     if (items.length) groups.push({ key: `d${d.id}`, label: d.name, color: dirColor(d), items });
   }
-  const orphanTask = maps.filter((m) => m.task_id && !m.direction_id);
+  const orphanTask = maps.filter((m) => m.task_id && (!m.direction_id || !known.has(m.direction_id)));
   if (orphanTask.length) groups.push({ key: "tasks", label: "Привязаны к задачам", items: orphanTask });
 
   return (

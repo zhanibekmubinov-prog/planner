@@ -86,6 +86,37 @@ describe("ConfirmProvider — К2: опасное действие не долж
   });
 });
 
+describe("ConfirmProvider — typeToConfirm (К2)", () => {
+  it("кнопка выключена, пока не введено название; ввод без учёта регистра/пробелов включает её; клик → true", async () => {
+    const { results } = await open("Направление уйдёт в корзину.", { danger: true, okLabel: "Удалить направление", typeToConfirm: "Закуп" });
+    const ok = screen.getByRole("button", { name: "Удалить направление" });
+    expect(ok).toBeDisabled();
+    const input = screen.getByLabelText("Введите название, чтобы подтвердить");
+    fireEvent.change(input, { target: { value: "Зак" } });
+    expect(ok).toBeDisabled();
+    fireEvent.change(input, { target: { value: "  закуп " } });
+    expect(ok).toBeEnabled();
+    await act(async () => { fireEvent.click(ok); });
+    await flush();
+    expect(results[0]).toBe(true);
+  });
+
+  it("Enter в поле ввода не подтверждает опасное действие даже при совпадении", async () => {
+    const { results } = await open("Точно?", { danger: true, typeToConfirm: "корзина" });
+    const input = screen.getByLabelText("Введите название, чтобы подтвердить");
+    fireEvent.change(input, { target: { value: "корзина" } });
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); fireEvent.keyDown(window, { key: "Enter" }); });
+    await flush();
+    expect(results[0]).toBe("pending");
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("details выводится под текстом", async () => {
+    await open("Текст", { details: <span>Вернуть можно из корзины</span> });
+    expect(screen.getByText("Вернуть можно из корзины")).toBeInTheDocument();
+  });
+});
+
 describe("ConfirmProvider — регрессия", () => {
   it("клик по OK → true", async () => {
     const { results } = await open("x", { danger: true });

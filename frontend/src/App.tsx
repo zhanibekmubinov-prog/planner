@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { LoginScreen, pickUpSession, ProfileModal } from "./Account";
 import InboxPage from "./Inbox";
-import { onUnauthorized } from "./api";
+import { errorText, onUnauthorized, put } from "./api";
 import { Direction, dirColor, Project, projColor, SharedWithMe } from "./api";
+import ArchivePage from "./Archive";
 import Board from "./Board";
 import DirectionModal from "./DirectionModal";
 import DirectionMenu, { anchorFromEvent, MenuAnchor, RenameModal } from "./DirectionMenu";
@@ -11,12 +12,15 @@ import { PeoplePage, ToolsPage } from "./Registry";
 import MindMapEditor from "./MindMapEditor";
 import MindMapsPage from "./MindMaps";
 import Overview from "./Overview";
-import ProjectMenu, { ProjectAnchor, projectAnchorFromEvent, ProjectModal, RenameProjectModal } from "./ProjectMenu";
+import ProjectMenu, { ProjectAnchor, projectAnchorFromEvent, projectBody, ProjectModal, RenameProjectModal } from "./ProjectMenu";
 import ShareModal, { ShareTarget } from "./ShareModal";
 import SharedPage from "./SharedPage";
 import Sidebar, { View } from "./Sidebar";
 import { useStore } from "./store";
 import TaskPanel from "./TaskPanel";
+import { useToast } from "./toast";
+import TrashPage from "./Trash";
+import { applyUpdate, useUpdateAvailable } from "./update";
 import "./styles.css";
 
 export default function App() {
@@ -38,7 +42,15 @@ function Workspace() {
   const [prenaming, setPrenaming] = useState<Project | null>(null);
   const [projModal, setProjModal] = useState<{ direction: Direction; project: Project | null } | null>(null);
   const [share, setShare] = useState<ShareTarget | null>(null);
+  const toast = useToast();
+  const updateReady = useUpdateAvailable();
   const openMenu = (d: Direction, e: React.MouseEvent) => setMenu(anchorFromEvent(d, e));
+  const openTaskAnywhere = (id: number) => { setView({ kind: "board", directionId: null }); setSelectedId(id); };
+  // В4: вернуть проект из архива прямо с карты проектов
+  const restoreProject = async (p: Project) => {
+    try { await put<Project>(`/projects/${p.id}`, { ...projectBody(p), status: "active" }); await store.reloadProjects(); }
+    catch (e) { store.setError(errorText(e)); }
+  };
   const openProjectMenu = (p: Project, e: React.MouseEvent) => setPmenu(projectAnchorFromEvent(p, e));
 
   const direction = useMemo(
@@ -65,18 +77,14 @@ function Workspace() {
     }
   }, [view, store.directions, store.projects, store.loading]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelectedId(null); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
   // Ссылки из уведомлений: /?task=ID — карточка задачи; /?project=ID — доска проекта; /?direction=ID — карта проектов
   useEffect(() => {
     if (store.loading) return;
     const q = new URLSearchParams(window.location.search);
     const taskId = Number(q.get("task")), projectId = Number(q.get("project")), directionId = Number(q.get("direction"));
     if (taskId && store.tasks.some((t) => t.id === taskId)) { setView({ kind: "board", directionId: null }); setSelectedId(taskId); }
+    else if (taskId && store.inbox.some((t) => t.id === taskId)) { setView({ kind: "inbox" }); }
+    else if (taskId) toast(`Задача #${taskId} недоступна: удалена, в корзине или доступ к ней закрыт.`);   // Н3
     else if (projectId) { const p = store.projects.find((x) => x.id === projectId); if (p) setView({ kind: "board", directionId: p.direction_id, projectId: p.id }); }
     else if (directionId && store.directions.some((d) => d.id === directionId)) setView({ kind: "direction", directionId });
     if (taskId || projectId || directionId) window.history.replaceState(null, "", window.location.pathname);
@@ -97,15 +105,22 @@ function Workspace() {
       <Sidebar
         directions={store.directions} projects={store.projects} tasks={store.tasks} view={view} mindmapCount={store.mindmaps.length}
         inboxCount={store.inbox.filter((t) => t.status !== "done").length} sharedCount={sharedOpen} me={store.me} onProfile={() => setProfile(true)}
+        trashCount={store.trash ? store.trash.directions.length + store.trash.projects.length + store.trash.tasks.length : 0}
         onView={(v) => { setView(v); if (v.kind !== "board") setSelectedId(null); }}
         onNewDirection={() => setDirModal({ open: true, direction: null })} onNewProject={(d) => setProjModal({ direction: d, project: null })}
         onDirectionMenu={openMenu} onProjectMenu={openProjectMenu}
       />
 
       <main className="main">
+        {updateReady && (
+          <div className="update-bar" role="status">
+            <span>Доступна новая версия Planner.</span>
+            <button className="btn sm primary" onClick={applyUpdate}>Обновить</button>
+          </div>
+        )}
         {store.error && (
           <div className="error-bar" role="alert">
-            <span>Не получилось связаться с сервером: {store.error}</span>
+            <span>{store.error}</span>
             <button className="btn sm" onClick={() => { store.setError(null); void store.reload(); }}>Повторить</button>
             <button className="btn ghost sm" onClick={() => store.setError(null)} aria-label="Скрыть">×</button>
           </div>
@@ -118,6 +133,7 @@ function Workspace() {
             onOpenDirection={(id) => setView({ kind: "direction", directionId: id })}
             onOpenTask={(dirId, taskId) => { setView({ kind: "board", directionId: dirId }); setSelectedId(taskId); }}
             onNewDirection={() => setDirModal({ open: true, direction: null })} onDirectionMenu={openMenu}
+            onOrphans={() => setView({ kind: "board", directionId: null, orphans: true })}
           />
         ) : view.kind === "direction" && direction ? (
           <DirectionPage key={direction.id} store={store} direction={direction}
@@ -125,11 +141,16 @@ function Workspace() {
             onOpenTask={(pid, taskId) => { setView({ kind: "board", directionId: direction.id, projectId: pid }); setSelectedId(taskId); }}
             onNewProject={() => setProjModal({ direction, project: null })} onEditDirection={() => setDirModal({ open: true, direction })}
             onDirectionMenu={(e) => openMenu(direction, e)} onProjectMenu={openProjectMenu} onShare={() => shareDirection(direction)}
-            onOpenMindmap={(id) => setView({ kind: "mindmap", id })} onMindmaps={() => setView({ kind: "mindmaps", directionId: direction.id })} />
+            onOpenMindmap={(id) => setView({ kind: "mindmap", id })} onMindmaps={() => setView({ kind: "mindmaps", directionId: direction.id })}
+            onRestoreProject={restoreProject} />
+        ) : view.kind === "archive" ? (
+          <ArchivePage store={store} onOpenDirection={(id) => setView({ kind: "direction", directionId: id })} onOpenProject={(p) => setView({ kind: "board", directionId: p.direction_id, projectId: p.id })} />
+        ) : view.kind === "trash" ? (
+          <TrashPage store={store} />
         ) : view.kind === "shared" ? (
           <SharedPage store={store} onOpen={openShared} />
         ) : view.kind === "mindmaps" ? (
-          <MindMapsPage store={store} filterDirection={view.directionId ?? null} onOpen={(id) => setView({ kind: "mindmap", id })} onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
+          <MindMapsPage store={store} filterDirection={view.directionId ?? null} onOpen={(id) => setView({ kind: "mindmap", id })} onOpenTask={openTaskAnywhere} />
         ) : view.kind === "mindmap" ? (
           (() => {
             const m = store.mindmaps.find((x) => x.id === view.id);
@@ -137,13 +158,13 @@ function Workspace() {
               <MindMapEditor key={m.id} store={store} map={m}
                 onBack={() => setView(m.direction_id ? { kind: "direction", directionId: m.direction_id } : { kind: "mindmaps" })}
                 onDeleted={() => setView({ kind: "mindmaps" })}
-                onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
+                onOpenTask={openTaskAnywhere} />
             ) : <div className="state"><h3>Майндмап не найден</h3><button className="btn" onClick={() => setView({ kind: "mindmaps" })}>К списку</button></div>;
           })()
         ) : view.kind === "inbox" ? (
           <InboxPage store={store} />
         ) : view.kind === "people" ? (
-          <PeoplePage store={store} onOpenTask={(id) => { setView({ kind: "board", directionId: null }); setSelectedId(id); }} />
+          <PeoplePage store={store} onOpenTask={openTaskAnywhere} />
         ) : view.kind === "tools" ? (
           <ToolsPage store={store} />
         ) : store.directions.length === 0 && store.tasks.length === 0 ? (
@@ -153,7 +174,7 @@ function Workspace() {
             <button className="btn primary" onClick={() => setDirModal({ open: true, direction: null })}>+ Первое направление</button>
           </div>
         ) : (
-          <Board store={store} direction={direction} project={project} looseOnly={view.kind === "board" && view.projectId === "none"} selectedId={selectedId} onSelect={setSelectedId}
+          <Board store={store} direction={direction} project={project} looseOnly={view.kind === "board" && view.projectId === "none"} orphans={view.kind === "board" && !!view.orphans} selectedId={selectedId} onSelect={setSelectedId}
             onEditDirection={(d) => setDirModal({ open: true, direction: d })} onOpenDirection={(d) => setView({ kind: "direction", directionId: d.id })}
             onEditProject={(p) => setProjModal({ direction: store.directions.find((d) => d.id === p.direction_id)!, project: p })}
             onShare={() => (project ? shareProject(project) : direction && shareDirection(direction))}

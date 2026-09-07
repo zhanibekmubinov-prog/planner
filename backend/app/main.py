@@ -9,6 +9,9 @@ from .routers import auth as auth_router, directions, mcp, mcp_oauth, mindmaps, 
 from .scheduler import run_forever
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx на INFO печатает полный URL запроса — для Telegram это /bot<TOKEN>/sendMessage; в логах Railway токену не место
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -21,7 +24,7 @@ async def lifespan(app: FastAPI):
         await task
 
 
-app = FastAPI(title="CIS Planner API", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="CIS Planner API", version="0.8.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_list, allow_methods=["*"], allow_headers=["*"])
 
 

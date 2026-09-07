@@ -1,12 +1,17 @@
 // Страница направления — карта проектов: каждый проект карточкой со статистикой и шкалой внимания
-// (та же формула, что у Карты направлений, но уровнем ниже), плюс блок «Без проекта».
+// (та же формула, что у Карты направлений, но уровнем ниже), плюс блок «Без проекта» и свёрнутый блок «В архиве».
 // Задачи можно перетаскивать между проектами и «Без проекта» — как карточки между колонками на доске.
+// Правая кнопка: на шапке — меню направления, на карточке проекта — меню проекта, на строке задачи — меню задачи (К1/С1).
 import { useMemo, useState } from "react";
-import { canEdit, ChecklistItem, Direction, dirColor, isOverdue, Project, projColor, put, showDate, STATUS_LABEL, Task, TaskIn } from "./api";
+import { canEdit, Direction, dirColor, errorText, isOverdue, nProjects, plural, Project, projColor, put, showDate, STATUS_LABEL, Task, toIn } from "./api";
 import { checklistProgress } from "./Checklist";
+import { useDeletion } from "./deletion";
+import MiniMenu, { miniAnchor, MiniAnchor } from "./MiniMenu";
 import { createMindMap, MindButton } from "./MindMaps";
 import { buildReport } from "./Overview";
 import { Store } from "./store";
+
+export { toIn };
 
 type Props = {
   store: Store; direction: Direction;
@@ -15,34 +20,41 @@ type Props = {
   onNewProject: () => void; onEditDirection: () => void; onDirectionMenu: (e: React.MouseEvent) => void;
   onProjectMenu: (p: Project, e: React.MouseEvent) => void; onShare: () => void;
   onOpenMindmap: (id: number) => void; onMindmaps: () => void;
+  onRestoreProject?: (p: Project) => void;
 };
 
 const DRAG_TYPE = "text/task-id";
 const TOP = 5;
 
-const toIn = (t: Task, projectId: number | null): TaskIn => ({
-  title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
-  deadline: t.deadline || null, next_check_at: t.next_check_at || null,
-  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: projectId,
-  checklist: (t.checklist ?? []) as ChecklistItem[],
-});
+type TaskMenu = { task: Task; projectId: number | "none" | undefined; anchor: MiniAnchor; move?: boolean };   // move — второй шаг «Перенести в проект…»
 
-export default function DirectionPage({ store, direction, onOpenBoard, onOpenTask, onNewProject, onEditDirection, onDirectionMenu, onProjectMenu, onShare, onOpenMindmap, onMindmaps }: Props) {
+export default function DirectionPage({ store, direction, onOpenBoard, onOpenTask, onNewProject, onEditDirection, onDirectionMenu, onProjectMenu, onShare, onOpenMindmap, onMindmaps, onRestoreProject }: Props) {
   const color = dirColor(direction);
   const editable = canEdit(direction.access);
   const tasks = useMemo(() => store.tasks.filter((t) => t.directions.some((d) => d.id === direction.id)), [store.tasks, direction.id]);
+  const allProjects = useMemo(() => store.projects.filter((p) => p.direction_id === direction.id), [store.projects, direction.id]);
+  const archivedProjects = allProjects.filter((p) => p.status === "archived");
+  const archivedIds = new Set(archivedProjects.map((p) => p.id));
   const projects = useMemo(
-    () => store.projects.filter((p) => p.direction_id === direction.id && p.status !== "archived")
+    () => allProjects.filter((p) => p.status !== "archived")
       .map((p) => ({ project: p, report: buildReport({ ...direction, status: p.status }, tasks.filter((t) => t.project_id === p.id)) }))
       .sort((a, b) => (a.project.status === "paused" ? 1 : 0) - (b.project.status === "paused" ? 1 : 0) || b.report.score - a.report.score),
-    [store.projects, direction, tasks],
+    [allProjects, direction, tasks],
   );
-  const loose = tasks.filter((t) => !t.project_id);
+  // «Без проекта» — и задачи, чей проект в корзине (id нет в списке проектов)
+  const loose = tasks.filter((t) => !t.project_id || !store.projects.some((p) => p.id === t.project_id));
   const looseOpen = loose.filter((t) => t.status !== "done");
-  const whole = buildReport(direction, tasks);
-  const open = tasks.filter((t) => t.status !== "done");
+  const inArchive = tasks.filter((t) => t.project_id != null && archivedIds.has(t.project_id));
+  const inArchiveOpen = inArchive.filter((t) => t.status !== "done");
+  const live = tasks.filter((t) => !(t.project_id != null && archivedIds.has(t.project_id)));   // В5: считаем без архивных проектов
+  const whole = buildReport(direction, live);
+  const open = live.filter((t) => t.status !== "done");
   const maps = store.mindmaps.filter((m) => m.direction_id === direction.id && !m.task_id);
   const shared = direction.access === "edit" || direction.access === "view";
+  const [looseMenu, setLooseMenu] = useState<MiniAnchor | null>(null);
+  const [taskMenu, setTaskMenu] = useState<TaskMenu | null>(null);
+  const [showArchive, setShowArchive] = useState(false);
+  const { deleteTask } = useDeletion(store);
 
   // Перенос задачи между проектами: PUT всей карточки с новым project_id; направление проекта бэкенд добавит сам.
   const [moving, setMoving] = useState<number | null>(null);
@@ -54,22 +66,24 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
     setMoving(taskId);
     try {
       store.patchTask({ ...t, project_id: projectId });   // оптимистично — карточка сразу в новом проекте
-      store.patchTask(await put<Task>(`/tasks/${t.id}`, toIn(t, projectId)));
-    } catch (e) { store.patchTask(t); store.setError(String(e)); } finally { setMoving(null); }
+      store.patchTask(await put<Task>(`/tasks/${t.id}`, { ...toIn(t, projectId), updated_at: t.updated_at }));   // С10: с версией
+    } catch (e) { store.patchTask(t); store.setError(errorText(e)); void store.reloadTasks(); } finally { setMoving(null); }
   }
   const canDrop = (projectId: number | null) => editable && (projectId === null || canEdit(store.projects.find((p) => p.id === projectId)?.access));
+  const openTaskMenu = (projectId: number | "none" | undefined) => (t: Task, e: React.MouseEvent) => setTaskMenu({ task: t, projectId, anchor: miniAnchor(e) });
 
   return (
-    <div className="overview dir-page" style={{ ["--dir" as string]: color }} onContextMenu={onDirectionMenu}>
+    <div className="overview dir-page" style={{ ["--dir" as string]: color }}>
       <header className="ov-head">
-        <div className="dir-head">
+        <div className="dir-head" onContextMenu={onDirectionMenu}>
           <div className="dir-crumb">Направление{shared && <span className="tag shared-tag">открыл {direction.owner?.name ?? "коллега"} · {direction.access === "edit" ? "редактирование" : "просмотр"}</span>}</div>
-          <h2><span className="swatch" style={{ background: color }} />{direction.name}</h2>
+          <h2><span className="swatch" style={{ background: color }} />{direction.name}<button className="more" onClick={onDirectionMenu} title="Действия с направлением" aria-label={`Действия: ${direction.name}`}>⋯</button></h2>
           {direction.goal && <p className="ov-goal">{direction.goal}</p>}
           <p className="ov-sub">
-            {projects.length} {plural(projects.length, "проект", "проекта", "проектов")} · {open.length} открытых задач
+            {nProjects(projects.length)} · {open.length} открытых задач
             {whole.overdue.length > 0 && <> · <span className="over">{whole.overdue.length} просрочено</span></>}
             {looseOpen.length > 0 && <> · {looseOpen.length} без проекта</>}
+            {inArchiveOpen.length > 0 && <> · <span className="muted">+{inArchiveOpen.length} в архиве</span></>}
           </p>
         </div>
         <div className="dir-actions">
@@ -81,13 +95,13 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
             <MindButton count={maps.length} onClick={async () => {
               if (maps.length === 1) onOpenMindmap(maps[0].id);
               else if (maps.length > 1) onMindmaps();
-              else if (editable) { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); } }
+              else if (editable) { try { const m = await createMindMap(store, direction.name, { direction_id: direction.id }); onOpenMindmap(m.id); } catch (e) { store.setError(errorText(e)); } }
             }} />
           )}
         </div>
       </header>
 
-      {projects.length === 0 && loose.length === 0 ? (
+      {projects.length === 0 && loose.length === 0 && archivedProjects.length === 0 ? (
         <div className="state" style={{ flex: "none", padding: "48px 20px" }}>
           <h3>В направлении пока пусто</h3>
           <p>Проект — это крупная часть направления: договор, объект, кампания. Внутри проекта живут задачи.<br />Мелкие задачи можно вести и без проекта — прямо в направлении.</p>
@@ -102,27 +116,79 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
         <div className="ov-grid">
           {projects.map(({ project, report }) => (
             <ProjectCard key={project.id} p={project} r={report} color={projColor(project, store.directions)}
-              onOpen={() => onOpenBoard(project.id)} onTask={(id) => onOpenTask(project.id, id)} onMenu={(e) => onProjectMenu(project, e)}
+              onOpen={() => onOpenBoard(project.id)} onTask={(id) => onOpenTask(project.id, id)} onMenu={(e) => onProjectMenu(project, e)} onTaskMenu={openTaskMenu(project.id)}
               dropTarget={canDrop(project.id) ? project.id : undefined} onDropTask={(id) => moveTask(id, project.id)} dragEnabled={editable} movingId={moving} />
           ))}
           <DropCard className={`ov-card loose ${loose.length === 0 ? "empty" : ""}`} style={{ ["--dir" as string]: color }}
-            enabled={canDrop(null)} onDropTask={(id) => moveTask(id, null)}>
+            enabled={canDrop(null)} onDropTask={(id) => moveTask(id, null)} onContextMenu={(e) => setLooseMenu(miniAnchor(e))}>
             <header className="ov-card-head">
               <button className="ov-name" onClick={() => onOpenBoard("none")}>
                 <span className="swatch hollow" style={{ borderColor: color }} />
                 <span>Без проекта</span>
               </button>
               <span className="lvl lvl-ok">{looseOpen.length} откр.</span>
+              <button className="more" onClick={(e) => setLooseMenu(miniAnchor(e))} title="Действия" aria-label="Действия: Без проекта">⋯</button>
             </header>
             <p className="ov-goal">Задачи направления, не привязанные к проекту.{editable && projects.length > 0 && " Перетащите задачу на проект, чтобы перенести."}</p>
             {looseOpen.length > 0 ? (
-              <TaskList tasks={[...looseOpen].sort((a, b) => a.priority - b.priority)} onTask={(id) => onOpenTask("none", id)} onBoard={() => onOpenBoard("none")} dragEnabled={editable} movingId={moving} />
+              <TaskList tasks={[...looseOpen].sort((a, b) => a.priority - b.priority)} onTask={(id) => onOpenTask("none", id)} onBoard={() => onOpenBoard("none")} onTaskMenu={openTaskMenu("none")} dragEnabled={editable} movingId={moving} />
             ) : (
               <p className="ov-empty">{loose.length ? "Все закрыты." : "Пусто — сюда попадают задачи без проекта."}</p>
             )}
             {editable && <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => onOpenBoard("none")}>+ Задача без проекта</button>}
           </DropCard>
+          {archivedProjects.length > 0 && (
+            <article className={`ov-card archive-card ${showArchive ? "open" : ""}`} style={{ ["--dir" as string]: color }} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+              <header className="ov-card-head">
+                <button className="ov-name" onClick={() => setShowArchive((v) => !v)} aria-expanded={showArchive}>
+                  <span className="swatch archive-swatch" />
+                  <span>В архиве: {nProjects(archivedProjects.length)} · {inArchiveOpen.length} {plural(inArchiveOpen.length, "открытая задача", "открытые задачи", "открытых задач")}</span>
+                </button>
+                <span className="chev" aria-hidden="true">{showArchive ? "▾" : "▸"}</span>
+              </header>
+              {showArchive && (
+                <ul className="arch-list">
+                  {archivedProjects.map((p) => {
+                    const n = tasks.filter((t) => t.project_id === p.id && t.status !== "done").length;
+                    return (
+                      <li key={p.id}>
+                        <button className="arch-open" onClick={() => onOpenBoard(p.id)}><span className="swatch" style={{ background: projColor(p, store.directions) }} />{p.name}</button>
+                        <span className="mono hint">{n} откр.</span>
+                        {editable && onRestoreProject && <button className="btn ghost sm" onClick={() => onRestoreProject(p)}>Вернуть</button>}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </article>
+          )}
         </div>
+      )}
+
+      {looseMenu && (
+        <MiniMenu anchor={looseMenu} label="Без проекта" onClose={() => setLooseMenu(null)}
+          title={<><span className="swatch hollow" style={{ borderColor: color, border: "2px solid", background: "transparent" }} /><span className="ctx-name">Без проекта</span><span className="mono ctx-count">{looseOpen.length}</span></>}
+          items={[
+            { label: "Открыть доску", onClick: () => onOpenBoard("none") },
+            ...(editable ? [{ label: "Задача без проекта…", icon: "+", onClick: () => onOpenBoard("none") }] : []),
+          ]} />
+      )}
+      {taskMenu && (
+        <MiniMenu anchor={taskMenu.anchor} label={taskMenu.move ? "Перенести в проект" : `Задача ${taskMenu.task.title}`} onClose={() => setTaskMenu(null)}
+          title={<><span className={`st st-${taskMenu.task.status}`} /><span className="ctx-name">{taskMenu.move ? "Перенести: " : ""}{taskMenu.task.title}</span><span className="mono ctx-count">#{taskMenu.task.id}</span></>}
+          items={taskMenu.move ? [
+            // С11: список проектов направления + «Без проекта»; текущий — отмечен и выключен
+            ...allProjects.filter((p) => p.status !== "archived").map((p) => ({
+              label: <><span className="swatch" style={{ background: projColor(p, store.directions), width: 8, height: 8, borderRadius: 2, display: "inline-block", marginRight: 8 }} />{p.name}{taskMenu.task.project_id === p.id ? <span className="ctx-cur"> · сейчас</span> : null}</>,
+              onClick: () => { if (taskMenu.task.project_id !== p.id && canDrop(p.id)) void moveTask(taskMenu.task.id, p.id); },
+            })),
+            { label: <><span className="swatch hollow" style={{ borderColor: color, border: "2px solid", background: "transparent", width: 8, height: 8, borderRadius: "50%", display: "inline-block", marginRight: 8 }} />Без проекта{!taskMenu.task.project_id || !store.projects.some((p) => p.id === taskMenu.task.project_id) ? <span className="ctx-cur"> · сейчас</span> : null}</>,
+              onClick: () => { if (taskMenu.task.project_id) void moveTask(taskMenu.task.id, null); } },
+          ] : [
+            { label: "Открыть", onClick: () => onOpenTask(taskMenu.projectId, taskMenu.task.id) },
+            ...(editable && canEdit(taskMenu.task.access) ? [{ label: "Перенести в проект…", onClick: () => setTimeout(() => setTaskMenu({ ...taskMenu, move: true }), 0) }] : []),
+            ...(!taskMenu.task.access || taskMenu.task.access === "owner" ? ["hr" as const, { label: "Удалить задачу…", danger: true, onClick: () => void deleteTask(taskMenu.task) }] : []),
+          ]} />
       )}
     </div>
   );
@@ -144,8 +210,9 @@ function DropCard({ enabled, onDropTask, className, children, ...rest }: { enabl
   );
 }
 
-function ProjectCard({ p, r, color, onOpen, onTask, onMenu, dropTarget, onDropTask, dragEnabled, movingId }: {
+function ProjectCard({ p, r, color, onOpen, onTask, onMenu, onTaskMenu, dropTarget, onDropTask, dragEnabled, movingId }: {
   p: Project; r: ReturnType<typeof buildReport>; color: string; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void;
+  onTaskMenu: (t: Task, e: React.MouseEvent) => void;
   dropTarget?: number; onDropTask: (taskId: number) => void; dragEnabled: boolean; movingId: number | null;
 }) {
   const total = r.tasks.length;
@@ -176,7 +243,7 @@ function ProjectCard({ p, r, color, onOpen, onTask, onMenu, dropTarget, onDropTa
       </dl>
       {total > 0 && <p className="ov-reasons">{r.reasons.length ? r.reasons.join(" · ") : "движение есть, сроки соблюдаются"}</p>}
       {sorted.length > 0 ? (
-        <TaskList tasks={sorted} onTask={onTask} onBoard={onOpen} dragEnabled={dragEnabled} movingId={movingId} />
+        <TaskList tasks={sorted} onTask={onTask} onBoard={onOpen} onTaskMenu={onTaskMenu} dragEnabled={dragEnabled} movingId={movingId} />
       ) : (
         <p className="ov-empty drop-hint">{total === 0 ? (dropTarget !== undefined ? "Задач нет — перетащите сюда или откройте доску проекта." : "Задач нет — откройте доску проекта и добавьте первую.") : "Все задачи закрыты."}</p>
       )}
@@ -185,26 +252,27 @@ function ProjectCard({ p, r, color, onOpen, onTask, onMenu, dropTarget, onDropTa
 }
 
 /** Список открытых задач карточки: первые пять, остальные раскрываются на месте — чтобы любую можно было перетащить. */
-function TaskList({ tasks, onTask, onBoard, dragEnabled, movingId }: { tasks: Task[]; onTask: (id: number) => void; onBoard: () => void; dragEnabled: boolean; movingId: number | null }) {
+function TaskList({ tasks, onTask, onBoard, onTaskMenu, dragEnabled, movingId }: { tasks: Task[]; onTask: (id: number) => void; onBoard: () => void; onTaskMenu: (t: Task, e: React.MouseEvent) => void; dragEnabled: boolean; movingId: number | null }) {
   const [all, setAll] = useState(false);
   const shown = all ? tasks : tasks.slice(0, TOP);
   const rest = tasks.length - shown.length;
   return (
     <ul className="ov-tasks">
-      {shown.map((t) => <TaskRow key={t.id} t={t} onClick={() => onTask(t.id)} draggable={dragEnabled && canEdit(t.access)} moving={movingId === t.id} />)}
+      {shown.map((t) => <TaskRow key={t.id} t={t} onClick={() => onTask(t.id)} onMenu={(e) => onTaskMenu(t, e)} draggable={dragEnabled && canEdit(t.access)} moving={movingId === t.id} />)}
       {rest > 0 && <li className="more"><button onClick={() => setAll(true)}>ещё {rest} — показать все</button></li>}
       {all && tasks.length > TOP && <li className="more"><button onClick={() => setAll(false)}>свернуть</button> <button onClick={onBoard}>на доску →</button></li>}
     </ul>
   );
 }
 
-function TaskRow({ t, onClick, draggable, moving }: { t: Task; onClick: () => void; draggable: boolean; moving: boolean }) {
+function TaskRow({ t, onClick, onMenu, draggable, moving }: { t: Task; onClick: () => void; onMenu: (e: React.MouseEvent) => void; draggable: boolean; moving: boolean }) {
   const late = t.deadline && isOverdue(`${t.deadline}T23:59:59`);
   const [dragging, setDragging] = useState(false);
   const ck = checklistProgress(t.checklist);
   return (
     <li className={`${dragging ? "dragging" : ""} ${moving ? "moving" : ""}`}
       draggable={draggable}
+      onContextMenu={onMenu}
       onDragStart={(e) => { e.dataTransfer.setData(DRAG_TYPE, String(t.id)); e.dataTransfer.effectAllowed = "move"; setDragging(true); }}
       onDragEnd={() => setDragging(false)}>
       <button onClick={onClick} title={draggable ? "Открыть · перетащите на другой проект, чтобы перенести" : undefined}>
@@ -216,11 +284,4 @@ function TaskRow({ t, onClick, draggable, moving }: { t: Task; onClick: () => vo
       </button>
     </li>
   );
-}
-
-function plural(n: number, one: string, few: string, many: string) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-  return many;
 }

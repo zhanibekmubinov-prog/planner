@@ -1,4 +1,7 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEFAULT_SECRETS = ("change-me", "change-me-too")
 
 
 class Settings(BaseSettings):
@@ -36,6 +39,17 @@ class Settings(BaseSettings):
     notify_email_to: str = ""                 # куда слать напоминания (по умолчанию = ms_mailbox)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("api_token", "session_secret")
+    @classmethod
+    def _secret_is_real(cls, v: str, info):
+        """К2: с дефолтным или коротким секретом приложение не стартует — иначе любой подделает JWT владельца."""
+        v = (v or "").strip()
+        if v in _DEFAULT_SECRETS or v.startswith("change-me") or len(v) < 16:
+            env = info.field_name.upper()
+            raise ValueError(f"{env}: задайте случайную строку не короче 16 символов (сейчас значение по умолчанию или слишком короткое). "
+                             f"Например: python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        return v
 
     @property
     def cors_list(self) -> list[str]:

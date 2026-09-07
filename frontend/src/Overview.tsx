@@ -1,7 +1,8 @@
 // Карта направлений: одна страница со всеми направлениями, их задачами и шкалой внимания —
 // показывает, какое направление руководитель упускает.
-import { useMemo } from "react";
-import { Direction, dirColor, isOverdue, showDate, STATUS_LABEL, Task } from "./api";
+import { useMemo, useState } from "react";
+import { Direction, dirColor, isOverdue, plural, showDate, STATUS_LABEL, Task } from "./api";
+import MiniMenu, { miniAnchor, MiniAnchor } from "./MiniMenu";
 import { Store } from "./store";
 
 type Level = { key: "focus" | "ok" | "fading" | "lost"; label: string; hint: string };
@@ -28,7 +29,7 @@ export function buildReport(direction: Direction, all: Task[], now = Date.now())
   const checkDue = open.filter((t) => isOverdue(t.next_check_at));
   const stamps = tasks.map((t) => new Date(t.updated_at || t.created_at).getTime());
   const last = stamps.length ? Math.max(...stamps) : null;
-  const idleDays = last === null ? null : Math.floor((now - last) / DAY);
+  const idleDays = last === null ? null : Math.max(0, Math.floor((now - last) / DAY));   // часы сервера могут спешить — не уходим в минус
 
   // Долг внимания 0–100: чем выше, тем сильнее направление запущено
   const reasons: string[] = [];
@@ -54,9 +55,10 @@ export function buildReport(direction: Direction, all: Task[], now = Date.now())
   };
 }
 
-type Props = { store: Store; onOpenDirection: (id: number) => void; onOpenTask: (directionId: number, taskId: number) => void; onNewDirection: () => void; onDirectionMenu: (d: Direction, e: React.MouseEvent) => void };
+type Props = { store: Store; onOpenDirection: (id: number) => void; onOpenTask: (directionId: number, taskId: number) => void; onNewDirection: () => void; onDirectionMenu: (d: Direction, e: React.MouseEvent) => void; onOrphans?: () => void };
 
-export default function Overview({ store, onOpenDirection, onOpenTask, onNewDirection, onDirectionMenu }: Props) {
+export default function Overview({ store, onOpenDirection, onOpenTask, onNewDirection, onDirectionMenu, onOrphans }: Props) {
+  const [taskMenu, setTaskMenu] = useState<{ task: Task; directionId: number; anchor: MiniAnchor } | null>(null);
   const reports = useMemo(() => {
     const now = Date.now();
     return store.directions
@@ -89,7 +91,7 @@ export default function Overview({ store, onOpenDirection, onOpenTask, onNewDire
           <p className="ov-sub">
             {active.length} {plural(active.length, "направление", "направления", "направлений")} · {totalOpen} открытых задач
             {totalOverdue > 0 && <> · <span className="over">{totalOverdue} просрочено</span></>}
-            {unassigned.length > 0 && <> · {unassigned.length} задач без направления</>}
+            {unassigned.length > 0 && <> · {onOrphans ? <button className="ov-link" onClick={onOrphans} title="Открыть доску задач без направления">{unassigned.length} {plural(unassigned.length, "задача", "задачи", "задач")} без направления →</button> : `${unassigned.length} задач без направления`}</>}
           </p>
         </div>
         <div className={`ov-verdict ${neglected.length ? "warn" : "ok"}`}>
@@ -100,13 +102,23 @@ export default function Overview({ store, onOpenDirection, onOpenTask, onNewDire
       </header>
 
       <div className="ov-grid">
-        {reports.map((r) => <DirectionCard key={r.direction.id} r={r} onOpen={() => onOpenDirection(r.direction.id)} onTask={(id) => onOpenTask(r.direction.id, id)} onMenu={(e) => onDirectionMenu(r.direction, e)} />)}
+        {reports.map((r) => <DirectionCard key={r.direction.id} r={r} onOpen={() => onOpenDirection(r.direction.id)} onTask={(id) => onOpenTask(r.direction.id, id)} onMenu={(e) => onDirectionMenu(r.direction, e)}
+          onTaskMenu={(t, e) => setTaskMenu({ task: t, directionId: r.direction.id, anchor: miniAnchor(e) })} />)}
       </div>
+      {/* С1: правая кнопка на строке задачи — меню задачи, а не направления */}
+      {taskMenu && (
+        <MiniMenu anchor={taskMenu.anchor} label={`Задача ${taskMenu.task.title}`} onClose={() => setTaskMenu(null)}
+          title={<><span className={`st st-${taskMenu.task.status}`} /><span className="ctx-name">{taskMenu.task.title}</span><span className="mono ctx-count">#{taskMenu.task.id}</span></>}
+          items={[
+            { label: "Открыть", onClick: () => onOpenTask(taskMenu.directionId, taskMenu.task.id) },
+            { label: "К карте проектов направления", onClick: () => onOpenDirection(taskMenu.directionId) },
+          ]} />
+      )}
     </div>
   );
 }
 
-function DirectionCard({ r, onOpen, onTask, onMenu }: { r: DirectionReport; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void }) {
+function DirectionCard({ r, onOpen, onTask, onMenu, onTaskMenu }: { r: DirectionReport; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void; onTaskMenu: (t: Task, e: React.MouseEvent) => void }) {
   const color = dirColor(r.direction);
   const total = r.tasks.length;
   const pct = (n: number) => (total ? (n / total) * 100 : 0);
@@ -159,7 +171,7 @@ function DirectionCard({ r, onOpen, onTask, onMenu }: { r: DirectionReport; onOp
           {topTasks.map((t) => {
             const late = t.deadline && isOverdue(`${t.deadline}T23:59:59`);
             return (
-              <li key={t.id}>
+              <li key={t.id} onContextMenu={(e) => onTaskMenu(t, e)}>
                 <button onClick={() => onTask(t.id)}>
                   <span className={`st st-${t.status}`} title={STATUS_LABEL[t.status]} />
                   <span className="tt">{t.title}</span>
@@ -175,11 +187,4 @@ function DirectionCard({ r, onOpen, onTask, onMenu }: { r: DirectionReport; onOp
       )}
     </article>
   );
-}
-
-function plural(n: number, one: string, few: string, many: string) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-  return many;
 }

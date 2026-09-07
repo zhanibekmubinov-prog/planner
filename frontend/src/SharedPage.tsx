@@ -1,6 +1,6 @@
 // Раздел «Общие»: то, что коллеги открыли мне — направления, проекты, задачи, сгруппировано по человеку.
 import { useMemo } from "react";
-import { del, ENTITY_LABEL, PERMISSION_LABEL, SharedWithMe, showDate } from "./api";
+import { del, ENTITY_LABEL, errorText, PERMISSION_LABEL, SharedWithMe, showDate } from "./api";
 import { useConfirm } from "./confirm";
 import { Store } from "./store";
 
@@ -30,7 +30,7 @@ export default function SharedPage({ store, onOpen }: Props) {
       // свой доступ можно снять самому: находим id шары через список «мне открыли» нет — удаляем по составному ключу
       await del(`/shares/mine?entity_type=${s.entity_type}&entity_id=${s.entity_id}`);
       await Promise.all([store.reloadShared(), store.reloadDirections(), store.reloadProjects(), store.reloadTasks()]);
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   }
 
   return (

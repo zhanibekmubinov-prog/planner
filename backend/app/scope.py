@@ -9,6 +9,11 @@
              проекта, которым поделились): сам контейнер только для навигации;
   assignee — задача поручена этому пользователю: можно менять статус и писать отчёт.
 Доступ к направлению распространяется на его проекты и задачи; доступ к проекту — на его задачи.
+
+v0.8 — корзина (soft-delete): у Direction/Project/Task есть `deleted_at`. Всё, что в корзине, здесь НЕ видно:
+`alive(model)` — SQL-условие «не в корзине», `is_deleted(obj)` — проверка объекта. Отношения `Task.directions`,
+`Direction.projects`, `Direction.tasks`, `Project.tasks` в models.py уже отдают только живые записи.
+Владелец направления/проекта всегда видит задачи внутри своего контейнера (даже если владелец задачи другой).
 """
 from fastapi import HTTPException
 from sqlalchemy import exists, or_, select
@@ -17,6 +22,16 @@ from . import models
 
 OWNER, EDIT, VIEW, VIA, ASSIGNEE = "owner", "edit", "view", "via", "assignee"
 WRITE = (OWNER, EDIT)
+SOFT_DELETABLE = (models.Direction, models.Project, models.Task)
+
+
+def alive(model):
+    """SQL-условие «не в корзине» для Direction / Project / Task: `.where(alive(models.Task))`."""
+    return model.deleted_at.is_(None)
+
+
+def is_deleted(obj) -> bool:
+    return getattr(obj, "deleted_at", None) is not None
 
 
 def my_person_id(db: Session, user: models.User) -> int | None:
@@ -52,6 +67,8 @@ def _best(*perms: str | None) -> str | None:
 # ── Уровень доступа к конкретной сущности ────────────────────────────────────
 
 def direction_access(db: Session, user: models.User, d: models.Direction, g: Grants | None = None) -> str | None:
+    if is_deleted(d):
+        return None
     if d.owner_id == user.id:
         return OWNER
     g = g or Grants(db, user)
@@ -66,6 +83,8 @@ def direction_access(db: Session, user: models.User, d: models.Direction, g: Gra
 
 
 def project_access(db: Session, user: models.User, p: models.Project, g: Grants | None = None) -> str | None:
+    if is_deleted(p):
+        return None
     if p.owner_id == user.id:
         return OWNER
     g = g or Grants(db, user)
@@ -77,13 +96,22 @@ def project_access(db: Session, user: models.User, p: models.Project, g: Grants 
     return None
 
 
+def in_my_container(user: models.User, t: models.Task) -> bool:
+    """Задача лежит в моём направлении или моём проекте (владелец контейнера всегда видит его содержимое, В2)."""
+    if t.project and not is_deleted(t.project) and t.project.owner_id == user.id:
+        return True
+    return any(d.owner_id == user.id for d in t.directions)
+
+
 def task_access(db: Session, user: models.User, t: models.Task, g: Grants | None = None) -> str | None:
+    if is_deleted(t):
+        return None
     if t.owner_id == user.id:
         return OWNER
     g = g or Grants(db, user)
     shared = _best(g.task.get(t.id), g.project.get(t.project_id) if t.project_id else None,
                    *[g.direction.get(d.id) for d in t.directions])
-    if shared == EDIT:
+    if shared == EDIT or in_my_container(user, t):
         return EDIT
     if is_assignee(db, user, t):
         return ASSIGNEE   # исполнитель: статус и отчёт — даже если контейнер открыт только на просмотр
@@ -100,7 +128,7 @@ def stamp(obj, access: str | None):
 
 def visible_directions(db: Session, user: models.User) -> list[models.Direction]:
     g = Grants(db, user)
-    q = select(models.Direction).where(models.Direction.owner_id == user.id)
+    q = select(models.Direction).where(models.Direction.owner_id == user.id, alive(models.Direction))
     own = db.scalars(q.order_by(models.Direction.id)).all()
     out = [stamp(d, OWNER) for d in own]
     if g.empty:
@@ -113,14 +141,15 @@ def visible_directions(db: Session, user: models.User) -> list[models.Direction]
         ids |= set(db.scalars(select(models.task_directions.c.direction_id).where(models.task_directions.c.task_id.in_(list(g.task)))).all())
     ids -= seen
     if ids:
-        for d in db.scalars(select(models.Direction).where(models.Direction.id.in_(list(ids))).order_by(models.Direction.id)).all():
-            out.append(stamp(d, direction_access(db, user, d, g)))
+        for d in db.scalars(select(models.Direction).where(models.Direction.id.in_(list(ids)), alive(models.Direction)).order_by(models.Direction.id)).all():
+            acc = direction_access(db, user, d, g)
+            if acc: out.append(stamp(d, acc))
     return out
 
 
 def visible_projects(db: Session, user: models.User) -> list[models.Project]:
     g = Grants(db, user)
-    own = db.scalars(select(models.Project).where(models.Project.owner_id == user.id).order_by(models.Project.id)).all()
+    own = db.scalars(select(models.Project).where(models.Project.owner_id == user.id, alive(models.Project)).order_by(models.Project.id)).all()
     out = [stamp(p, OWNER) for p in own]
     if g.empty:
         return out
@@ -132,8 +161,9 @@ def visible_projects(db: Session, user: models.User) -> list[models.Project]:
         ids |= set(x for x in db.scalars(select(models.Task.project_id).where(models.Task.id.in_(list(g.task)))).all() if x)
     ids -= seen
     if ids:
-        for p in db.scalars(select(models.Project).where(models.Project.id.in_(list(ids))).order_by(models.Project.id)).all():
-            out.append(stamp(p, project_access(db, user, p, g)))
+        for p in db.scalars(select(models.Project).where(models.Project.id.in_(list(ids)), alive(models.Project)).order_by(models.Project.id)).all():
+            acc = project_access(db, user, p, g)
+            if acc: out.append(stamp(p, acc))
     return out
 
 
@@ -145,9 +175,27 @@ def assigned_to_me_clause(db: Session, user: models.User):
     return exists().where(models.Delegation.task_id == models.Task.id, models.Delegation.person_id == pid)
 
 
+def my_alive_directions_subq(user: models.User):
+    return select(models.Direction.id).where(models.Direction.owner_id == user.id, alive(models.Direction))
+
+
+def my_alive_projects_subq(user: models.User):
+    return select(models.Project.id).where(models.Project.owner_id == user.id, alive(models.Project))
+
+
+def orphan_clause():
+    """Задача «без направления»: ни одного живого направления."""
+    return ~exists().where(models.task_directions.c.task_id == models.Task.id,
+                           models.task_directions.c.direction_id.in_(select(models.Direction.id).where(alive(models.Direction))))
+
+
 def visible_tasks_query(db: Session, user: models.User):
+    """Живые задачи: мои, порученные мне, расшаренные и лежащие в моих направлениях/проектах."""
     g = Grants(db, user)
-    conds = [models.Task.owner_id == user.id, assigned_to_me_clause(db, user)]
+    conds = [models.Task.owner_id == user.id, assigned_to_me_clause(db, user),
+             models.Task.project_id.in_(my_alive_projects_subq(user)),
+             exists().where(models.task_directions.c.task_id == models.Task.id,
+                            models.task_directions.c.direction_id.in_(my_alive_directions_subq(user)))]
     if g.task:
         conds.append(models.Task.id.in_(list(g.task)))
     if g.project:
@@ -155,7 +203,7 @@ def visible_tasks_query(db: Session, user: models.User):
     if g.direction:
         conds.append(exists().where(models.task_directions.c.task_id == models.Task.id,
                                     models.task_directions.c.direction_id.in_(list(g.direction))))
-    return select(models.Task).where(or_(*conds))
+    return select(models.Task).where(alive(models.Task), or_(*conds))
 
 
 def stamp_tasks(db: Session, user: models.User, tasks) -> list[models.Task]:
@@ -192,9 +240,20 @@ def get_task_editable(db: Session, user: models.User, id_: int) -> models.Task:
     return t
 
 
-def get_owned(db: Session, user: models.User, model, id_: int):
+_ACCESS = {models.Direction: direction_access, models.Project: project_access, models.Task: task_access}
+
+
+def get_owned(db: Session, user: models.User, model, id_: int, include_deleted: bool = False):
+    """Сущность, которой владею. Чужая, но видимая мне → 403 (Н4); невидимая или в корзине → 404."""
     obj = db.get(model, id_)
-    if not obj or getattr(obj, "owner_id", None) != user.id:
+    if obj is not None and is_deleted(obj) and not include_deleted:
+        obj = None
+    if not obj:
+        raise HTTPException(404, f"{model.__name__} {id_} not found")
+    if getattr(obj, "owner_id", None) != user.id:
+        acc = _ACCESS.get(model)
+        if acc and not is_deleted(obj) and acc(db, user, obj):
+            raise HTTPException(403, "Это может только владелец")
         raise HTTPException(404, f"{model.__name__} {id_} not found")
     return obj
 
@@ -234,7 +293,8 @@ def fetch_owned_many(db: Session, user: models.User, model, ids: list[int]):
 
 
 def fetch_directions_for_task(db: Session, user: models.User, ids: list[int], current: list[models.Direction]) -> list[models.Direction]:
-    """Направления задачи: свои или открытые на редактирование; уже привязанные к задаче оставляем как есть."""
+    """Направления задачи: свои или открытые на редактирование; уже привязанные к задаче оставляем как есть.
+    Проверка «не забрать чужую задачу» (В1/В2) — в routers/tasks.py."""
     keep = {d.id: d for d in current}
     out = []
     for i in ids:

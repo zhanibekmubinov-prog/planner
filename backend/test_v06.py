@@ -1,6 +1,6 @@
 """Проверка v0.6 на sqlite: проекты и совместный доступ. Запуск из backend/: python test_v06.py"""
 import os
-os.environ.update({"DATABASE_URL": "sqlite:///./_v06_test.db", "API_TOKEN": "tok", "OWNER_EMAIL": "jack@cis.kz",
+os.environ.update({"DATABASE_URL": "sqlite:///./_v06_test.db", "API_TOKEN": "test-api-token-0123456789", "SESSION_SECRET": "test-session-secret-0123456789", "OWNER_EMAIL": "jack@cis.kz",
                    "SCHEDULER_ENABLED": "false", "ALLOWED_EMAIL_DOMAINS": "cis.kz"})
 if os.path.exists("_v06_test.db"): os.remove("_v06_test.db")
 from fastapi.testclient import TestClient
@@ -71,9 +71,9 @@ assert ok(c.get(f"/api/tasks/{t1['id']}", headers=H(J)))["title"] == "Сдела
 t3 = ok(c.post("/api/tasks", json={"title": "Договориться на следующий год", "project_id": p_main["id"], "direction_ids": [], "tool_ids": []}, headers=H(N)), 201)
 assert t3["owner"]["email"] == "jack@cis.kz" and t3["access"] == "edit", t3
 assert any(t["id"] == t3["id"] and t["access"] == "owner" for t in ok(c.get("/api/tasks", headers=H(J))))
-# удалять и делиться редактор не может
-assert c.delete(f"/api/tasks/{t3['id']}", headers=H(N)).status_code == 404
-assert c.delete(f"/api/projects/{p_main['id']}", headers=H(N)).status_code == 404
+# удалять и делиться редактор не может (v0.8: видимое, но чужое → 403)
+assert c.delete(f"/api/tasks/{t3['id']}", headers=H(N)).status_code == 403
+assert c.delete(f"/api/projects/{p_main['id']}", headers=H(N)).status_code == 403
 # редактор может переименовать проект
 ok(c.put(f"/api/projects/{p_main['id']}", json={**{k: p_main[k] for k in ("direction_id", "name", "description", "goal", "color", "status")}, "goal": "Подписать до декабря"}, headers=H(N)))
 # но не направление (оно только via)
@@ -98,14 +98,16 @@ ok(c.delete(f"/api/shares/{sh['id']}", headers=H(N)), 204)   # приглашё�
 assert ok(c.get("/api/tasks", headers=H(N))) == []
 assert ok(c.get("/api/directions", headers=H(N))) == []
 
-# --- удаление проекта: задачи остаются в направлении ---
+# --- удаление проекта (v0.8: в корзину, затем навсегда): задачи остаются в направлении ---
 ok(c.delete(f"/api/projects/{p_main['id']}", headers=H(J)), 204)
+assert p_main["id"] not in [p["id"] for p in ok(c.get("/api/projects", headers=H(J)))]
+ok(c.delete(f"/api/trash/project/{p_main['id']}", headers=H(J)), 204)
 t1_after = ok(c.get(f"/api/tasks/{t1['id']}", headers=H(J))); assert t1_after["project_id"] is None and t1_after["directions"][0]["id"] == emba["id"]
 
 # --- MCP: проекты через Claude ---
 import json
 def call(tool, **args):
-    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}, headers={"Authorization": "Bearer tok"})
+    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}, headers={"Authorization": "Bearer test-api-token-0123456789"})
     assert r.status_code == 200, r.text
     res = r.json()["result"]; return json.loads(res["content"][0]["text"]), res["isError"]
 d, err = call("create_project", direction="Эмба", name="Договор бурение"); assert not err, d

@@ -64,20 +64,42 @@ def build_report(d: models.Direction, tasks: list[models.Task], now: datetime) -
     return r
 
 
+def _alive(items):
+    """Без записей в корзине (soft-delete v0.8)."""
+    return [x for x in items if getattr(x, "deleted_at", None) is None]
+
+
+def undelivered(db: Session, user: models.User, now: datetime, since: timedelta = DAY) -> list[dict]:
+    """Напоминания по моим задачам, которые планировщик не смог доставить за последние сутки (activity_log Reminder/gave_up)."""
+    rows = db.scalars(select(models.ActivityLog).where(models.ActivityLog.entity_type == "Reminder", models.ActivityLog.action == "gave_up",
+                                                      models.ActivityLog.created_at >= now - since)
+                      .order_by(models.ActivityLog.created_at.desc()).limit(50)).all()
+    out = []
+    for r in rows:
+        rem = db.get(models.Reminder, r.entity_id)
+        if rem is None or rem.task is None or rem.task.owner_id != user.id:
+            continue
+        reason = (r.payload or {}).get("reason") or "не доставлено"
+        detail = "; ".join(f"{k}: {v}" for k, v in (r.payload or {}).items() if k != "reason" and v != "ok")[:200]
+        out.append({"task": rem.task, "fire_at": rem.fire_at, "reason": reason, "detail": detail})
+    return out[:10]
+
+
 def collect(db: Session, user: models.User, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     today = now.astimezone(TZ).date()
-    directions = [d for d in db.scalars(select(models.Direction).where(models.Direction.owner_id == user.id)).all() if d.status != models.DirectionStatus.archived]
-    tasks = db.scalars(select(models.Task).where(models.Task.owner_id == user.id)).unique().all()
+    directions = [d for d in _alive(db.scalars(select(models.Direction).where(models.Direction.owner_id == user.id)).all()) if d.status != models.DirectionStatus.archived]
+    tasks = _alive(db.scalars(select(models.Task).where(models.Task.owner_id == user.id)).unique().all())
     # входящие поручения (мне поручили другие)
     pid = db.scalar(select(models.Person.id).where(models.Person.user_id == user.id))
     inbox = db.scalars(select(models.Delegation).where(models.Delegation.person_id == pid, models.Delegation.status == models.DelegationStatus.open)).all() if pid else []
-    inbox = [d for d in inbox if d.task.owner_id != user.id and d.task.status != models.TaskStatus.done]
+    inbox = [d for d in inbox if d.task.owner_id != user.id and d.task.status != models.TaskStatus.done and getattr(d.task, "deleted_at", None) is None]
     open_ = [t for t in tasks if t.status != models.TaskStatus.done]
     reports = sorted((build_report(d, tasks, now) for d in directions),
                      key=lambda r: (r.direction.status == models.DirectionStatus.paused, -r.score))
     active = [r for r in reports if r.direction.status != models.DirectionStatus.paused]
     delegs = db.scalars(select(models.Delegation).join(models.Task).where(models.Delegation.status == models.DelegationStatus.open, models.Task.owner_id == user.id)).all()
+    delegs = [x for x in delegs if getattr(x.task, "deleted_at", None) is None]
     return {
         "today": today,
         "reports": reports,
@@ -88,6 +110,7 @@ def collect(db: Session, user: models.User, now: datetime | None = None) -> dict
         "deleg_due": [x for x in delegs if x.check_at and _utc(x.check_at).astimezone(TZ).date() <= today and x.task.status != models.TaskStatus.done],
         "open_count": len(open_),
         "inbox": inbox,
+        "undelivered": undelivered(db, user, now),
     }
 
 
@@ -141,6 +164,11 @@ def render(data: dict) -> tuple[str, str, str]:
             who = e(x.task.owner.name) if x.task.owner else "—"
             due = f" (до {x.task.deadline.strftime('%d.%m')})" if x.task.deadline else ""
             tg.append(f"• {e(x.task.title)}{due} — от {who}")
+    if data.get("undelivered"):
+        tg.append(""); tg.append("<b>⚠️ Не доставлено (напоминания)</b>")
+        for x in data["undelivered"][:5]:
+            tg.append(f"• {e(x['task'].title)} — {e(x['reason'])}" + (f" ({e(x['detail'])})" if x["detail"] else ""))
+        tg.append("<i>Проверьте Telegram chat id в Профиле и адресатов поручений.</i>")
     tg.append(""); tg.append(f"Всего открытых задач: {data['open_count']}")
     tg_text = "\n".join(tg)
 

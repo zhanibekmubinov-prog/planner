@@ -3,7 +3,7 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  canEdit, dirColor, DIRECTION_COLORS, fromDateTimeInput, isOverdue, isShared, newNodeId, projColor, showDate, toDateInput, toDateTimeInput,
+  canEdit, dirColor, DIRECTION_COLORS, fromDateTimeInput, isOverdue, isShared, newNodeId, projColor, showDate, toDateInput, toDateTimeInput, toIn,
 } from "../api";
 import { checklistProgress } from "../Checklist";
 import DirectionPage from "../DirectionPage";
@@ -205,6 +205,14 @@ describe("DirectionPage — plural и доли шкалы (через ренде
   });
 });
 
-describe("toIn (DirectionPage/TaskPanel)", () => {
-  it.todo("deadline '' → null, checklist undefined → [], project_id из аргумента — функция не экспортирована из модуля; экспортировать и включить тест");
+describe("toIn (api.ts, используется DirectionPage/TaskPanel/Board)", () => {
+  it("deadline '' → null, checklist undefined → [], project_id из аргумента, без аргумента — как у задачи, id направлений без дублей", () => {
+    const t = makeTask({ deadline: "", next_check_at: "", checklist: undefined, project_id: 7, directions: [makeDirection({ id: 1 }), makeDirection({ id: 1 }), makeDirection({ id: 2 })] });
+    const a = toIn(t, 10);
+    expect(a.deadline).toBeNull(); expect(a.next_check_at).toBeNull(); expect(a.checklist).toEqual([]);
+    expect(a.project_id).toBe(10); expect(a.direction_ids).toEqual([1, 2]);
+    expect(toIn(t).project_id).toBe(7);
+    expect(toIn(t, null).project_id).toBeNull();
+    expect(toIn(makeTask({ project_id: undefined })).project_id).toBeNull();
+  });
 });

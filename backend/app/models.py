@@ -62,9 +62,13 @@ class Direction(Base):
     status: Mapped[DirectionStatus] = mapped_column(Enum(DirectionStatus), default=DirectionStatus.active)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    tasks: Mapped[list["Task"]] = relationship(secondary=task_directions, back_populates="directions")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина (soft-delete)
+    # `tasks` / `projects` — только живые (не в корзине); `all_projects` — все, нужен для каскада при удалении навсегда
+    tasks: Mapped[list["Task"]] = relationship(secondary=task_directions, back_populates="directions",
+                                               secondaryjoin="and_(task_directions.c.task_id == Task.id, Task.deleted_at.is_(None))")
     tools: Mapped[list["Tool"]] = relationship(secondary=tool_directions, back_populates="directions")
-    projects: Mapped[list["Project"]] = relationship(back_populates="direction", cascade="all, delete-orphan")
+    projects: Mapped[list["Project"]] = relationship(primaryjoin="and_(Project.direction_id == Direction.id, Project.deleted_at.is_(None))", viewonly=True)
+    all_projects: Mapped[list["Project"]] = relationship(back_populates="direction", cascade="all, delete-orphan")
     owner: Mapped["User | None"] = relationship()
 
 
@@ -80,8 +84,10 @@ class Project(Base):
     status: Mapped[DirectionStatus] = mapped_column(Enum(DirectionStatus), default=DirectionStatus.active)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    direction: Mapped[Direction] = relationship(back_populates="projects")
-    tasks: Mapped[list["Task"]] = relationship(back_populates="project")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина
+    direction: Mapped[Direction] = relationship(back_populates="all_projects")
+    tasks: Mapped[list["Task"]] = relationship(primaryjoin="and_(Task.project_id == Project.id, Task.deleted_at.is_(None))", viewonly=True)  # живые
+    all_tasks: Mapped[list["Task"]] = relationship(back_populates="project")
     owner: Mapped["User | None"] = relationship()
 
 
@@ -115,11 +121,14 @@ class Task(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     owner: Mapped["User | None"] = relationship()
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
-    project: Mapped["Project | None"] = relationship(back_populates="tasks")
+    project: Mapped["Project | None"] = relationship(back_populates="all_tasks")
     checklist: Mapped[list] = mapped_column(JSON, default=list)  # [{"id": str, "text": str, "done": bool}] — пункты внутри задачи
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина
+    # только живые направления: связи с направлениями в корзине остаются в task_directions (нужны для восстановления)
+    directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks",
+                                                       secondaryjoin="and_(task_directions.c.direction_id == Direction.id, Direction.deleted_at.is_(None))")
     tools: Mapped[list["Tool"]] = relationship(secondary=tool_tasks, back_populates="tasks")
     delegations: Mapped[list["Delegation"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     reminders: Mapped[list["Reminder"]] = relationship(back_populates="task", cascade="all, delete-orphan")
@@ -140,7 +149,7 @@ class Delegation(Base):
     __tablename__ = "delegations"
     id: Mapped[int] = mapped_column(primary_key=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
-    person_id: Mapped[int] = mapped_column(ForeignKey("people.id"))
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"))  # человека с поручениями удалить нельзя (409)
     assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     comment: Mapped[str | None] = mapped_column(Text)
@@ -164,6 +173,10 @@ class Tool(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     tasks: Mapped[list[Task]] = relationship(secondary=tool_tasks, back_populates="tools")
     directions: Mapped[list[Direction]] = relationship(secondary=tool_directions, back_populates="tools")
+
+    @property
+    def direction_ids(self) -> list[int]:
+        return [d.id for d in self.directions]
 
 
 class Reminder(Base):

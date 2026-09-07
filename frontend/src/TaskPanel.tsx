@@ -1,57 +1,93 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  api, canEdit, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, fromDateTimeInput, isOverdue, Person, post, projColor, put,
-  Recipient, RECIPIENT_LABEL, Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, Tool, TOOL_TYPE_LABEL, ToolType,
+  api, canEdit, Channel, CHANNEL_LABEL, del, Delegation, DelegationIn, dirColor, errorText, fromDateTimeInput, isApiStatus, isOverdue, Person, post, projColor, put,
+  Recipient, RECIPIENT_LABEL, Reminder, ReminderIn, showDateTime, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toDateInput, toDateTimeInput, toIn, Tool, TOOL_TYPE_LABEL, ToolType,
 } from "./api";
 import Checklist from "./Checklist";
 import { useConfirm } from "./confirm";
+import { useDeletion } from "./deletion";
+import { useDirtyFlag, useEscape } from "./layers";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
 
 type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void; onOpenMindmap: (id: number) => void; onShare: () => void };
 
-const toIn = (t: Task): TaskIn => ({
-  title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
-  deadline: t.deadline || null, next_check_at: t.next_check_at || null,
-  direction_ids: t.directions.map((d) => d.id), tool_ids: t.tools.map((x) => x.id), project_id: t.project_id ?? null,
-  checklist: t.checklist ?? [],
-});
+const SAVE_DELAY = 600;
 
 export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindmap, onShare }: Props) {
   const [draft, setDraft] = useState<TaskIn>(toIn(task));
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<string | null>(null);   // «название пустое — не сохраняю» и т. п.
+  // В1/В2: черновик и флаг «есть несохранённое» живут в ref — таймер, размонтирование и ответ сервера читают их напрямую,
+  // а не замыкание на устаревший state. revision растёт при каждой правке: ответ сервера на старую версию не откатывает поле.
+  const draftRef = useRef(draft);
+  const dirtyRef = useRef(false);
+  const revision = useRef(0);
+  const baseUpdatedAt = useRef(task.updated_at);       // С10: версия, от которой правим — сервер сверяет и отвечает 409
   const timer = useRef<number | null>(null);
+  const inflight = useRef<Promise<void> | null>(null);
+  const storeRef = useRef(store); storeRef.current = store;
+  const taskRef = useRef(task); taskRef.current = task;
   const confirm = useConfirm();
+  const { deleteTask } = useDeletion(store);
+  useDirtyFlag(dirty);
 
-  // Внешние изменения (перетаскивание, другая задача) — подтягиваем, если нет несохранённых правок
-  useEffect(() => { if (!dirty) setDraft(toIn(task)); }, [task, dirty]);
+  // Внешние изменения (перетаскивание, коллега) — подтягиваем, только если нет несохранённых правок
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    draftRef.current = toIn(task); setDraft(draftRef.current); baseUpdatedAt.current = task.updated_at;
+  }, [task]);
 
   function change(patch: Partial<TaskIn>) {
-    setDraft((d) => ({ ...d, ...patch }));
-    setDirty(true);
+    draftRef.current = { ...draftRef.current, ...patch }; revision.current++;
+    dirtyRef.current = true;
+    setDraft(draftRef.current); setDirty(true); setNote(null);
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => void flush(), SAVE_DELAY);
   }
 
-  // Автосохранение с задержкой
-  useEffect(() => {
-    if (!dirty) return;
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(async () => {
-      setSaving(true);
+  /** Отправить черновик. Если ответ пришёл на уже устаревшую версию — поле не трогаем, а сохраняем ещё раз. */
+  async function flush(): Promise<void> {
+    if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
+    if (!dirtyRef.current) return;
+    if (inflight.current) { await inflight.current; return flush(); }
+    const t = taskRef.current, st = storeRef.current;
+    const body = draftRef.current, rev = revision.current;
+    if (!body.title.trim()) { setNote("Название не может быть пустым — правка не сохранена."); return; }   // Н9
+    setSaving(true);
+    const run = (async () => {
       try {
-        const saved = task.access === "assignee"
-          ? await post<Task>(`/tasks/${task.id}/status`, { status: draft.status })
-          : await put<Task>(`/tasks/${task.id}`, { ...draft, title: draft.title.trim() || task.title });
-        store.patchTask(saved);
-        setDirty(false);
-      } catch (e) { store.setError(String(e)); } finally { setSaving(false); }
-    }, 600);
-    return () => { if (timer.current) window.clearTimeout(timer.current); };
-  }, [draft, dirty, task.id, task.title, store]);
+        const saved = t.access === "assignee"
+          ? await post<Task>(`/tasks/${t.id}/status`, { status: body.status })
+          : await put<Task>(`/tasks/${t.id}`, { ...body, title: body.title.trim(), updated_at: baseUpdatedAt.current });
+        baseUpdatedAt.current = saved.updated_at;
+        // ответ на устаревшую версию (печатали дальше) — в стор не кладём, следующий flush отправит актуальное
+        if (revision.current === rev) { dirtyRef.current = false; setDirty(false); draftRef.current = toIn(saved); setDraft(draftRef.current); st.patchTask(saved); }
+      } catch (e) {
+        if (isApiStatus(e, 409)) {
+          dirtyRef.current = false; setDirty(false);
+          const reload = await confirm("Задачу изменили в другом окне. Загрузить новую версию? Ваши несохранённые правки будут заменены.", { title: "Задача изменилась", okLabel: "Загрузить новую версию", cancelLabel: "Оставить мою" });
+          if (reload) { try { const fresh = await api<Task>(`/tasks/${t.id}`); baseUpdatedAt.current = fresh.updated_at; draftRef.current = toIn(fresh); setDraft(draftRef.current); st.patchTask(fresh); } catch (e2) { st.setError(errorText(e2)); } }
+          else { dirtyRef.current = true; setDirty(true); try { const fresh = await api<Task>(`/tasks/${t.id}`); baseUpdatedAt.current = fresh.updated_at; } catch { /* оставим версию как есть */ } }
+        } else st.setError(errorText(e));
+      } finally { setSaving(false); }
+    })();
+    inflight.current = run;
+    try { await run; } finally { inflight.current = null; }
+    if (dirtyRef.current && revision.current !== rev) void flush();
+  }
+
+  // В1: закрыли раньше таймера — досохраняем при размонтировании
+  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); if (dirtyRef.current) void flush(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const close = () => { void flush(); onClose(); };
+  useEscape(close);   // С9: Esc закрывает только карточку, если поверх нет меню/окна
 
   async function remove() {
-    if (!(await confirm(`Задача «${task.title}» будет удалена вместе с поручениями и напоминаниями.`, { danger: true, okLabel: "Удалить задачу" }))) return;
-    try { await del(`/tasks/${task.id}`); await store.reloadTasks(); onDeleted(); } catch (e) { store.setError(String(e)); }
+    if (timer.current) window.clearTimeout(timer.current);
+    dirtyRef.current = false;                      // удаляем — досохранять нечего
+    if (await deleteTask(task)) onDeleted(); else dirtyRef.current = dirty;
   }
 
   const toggle = (arr: number[], id: number) => (arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
@@ -70,7 +106,7 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
   }
 
   return (
-    <div className="backdrop task-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="backdrop task-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className={`task-modal ${readOnly ? "ro" : ""}`} role="dialog" aria-modal="true" aria-label="Карточка задачи" style={{ ["--dir" as string]: accent }}>
         <div className="tm-head">
           <span className="tm-rail">{(dirs.length ? dirs : [null]).map((d, i) => <span key={i} style={{ background: d ? dirColor(d) : "var(--line-strong)" }} />)}</span>
@@ -84,11 +120,12 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
           {!isOwner && !readOnly && <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>}
           <span className="spacer" />
           {isOwner && <button className="btn ghost sm" onClick={onShare} title="Открыть задачу коллеге">⇄ Поделиться</button>}
-          <button className="btn ghost icon" onClick={onClose} title="Закрыть (Esc)" aria-label="Закрыть">×</button>
+          <button className="btn ghost icon" onClick={close} title="Закрыть (Esc)" aria-label="Закрыть">×</button>
         </div>
 
         <div className="tm-body">
           <fieldset className="tm-main" disabled={readOnly}>
+            {note && <div className="tm-note" role="alert">{note}</div>}
             <div className="grow-wrap" data-value={draft.title || "Название задачи"}>
               <textarea
                 className="title-input" rows={1} value={draft.title} placeholder="Название задачи"
@@ -135,7 +172,7 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
                   <div className="row">
                     <MindButton count={0} label="Создать майндмап задачи" onClick={async () => {
                       try { const d0 = store.directions.find((d) => draft.direction_ids.includes(d.id) && canEdit(d.access) && d.access !== "via");
-                      const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: d0?.id ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(String(e)); }
+                      const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: d0?.id ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(errorText(e)); }
                     }} />
                     <span className="hint">Разложить задачу на шаги, риски, вопросы.</span>
                   </div>
@@ -145,7 +182,7 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
 
             <div className="danger-zone">
               <span className="hint">Создана {showDateTime(task.created_at)}{task.owner && !isOwner ? ` · ${task.owner.name}` : ""}</span>
-              {isOwner && <button className="btn danger sm" onClick={remove}>Удалить задачу</button>}
+              {isOwner && <button className="btn danger sm" onClick={remove}>Удалить задачу…</button>}
             </div>
           </fieldset>
 
@@ -201,15 +238,18 @@ function ToolsSection({ store, selected, onChange, taskId, attached, editable }:
   const [name, setName] = useState("");
   const [type, setType] = useState<ToolType>("google_sheet");
   const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);   // С2: двойной клик/Enter — один POST
 
   async function create() {
-    if (!name.trim()) return;
+    if (!name.trim() || busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
       const t = await post<Tool>("/tools", { name: name.trim(), type, url: url.trim() || null, source_ref: null, note: null, task_ids: [taskId], direction_ids: [] });
       await store.reloadTools();
       onChange([...selected, t.id]);
       setName(""); setUrl(""); setAdding(false);
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); } finally { busyRef.current = false; setBusy(false); }
   }
   const toggle = (id: number) => onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
 
@@ -221,14 +261,14 @@ function ToolsSection({ store, selected, onChange, taskId, attached, editable }:
       {adding && (
         <div className="inline-form">
           <div className="row">
-            <input className="input grow" placeholder="Название (например, «Реестр закупок»)" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            <input className="input grow" placeholder="Название (например, «Реестр закупок»)" value={name} onChange={(e) => setName(e.target.value)} autoFocus onKeyDown={(e) => { if (e.key === "Enter") void create(); }} />
             <select className="select" style={{ width: 170 }} value={type} onChange={(e) => setType(e.target.value as ToolType)}>
               {(Object.keys(TOOL_TYPE_LABEL) as ToolType[]).map((k) => <option key={k} value={k}>{TOOL_TYPE_LABEL[k]}</option>)}
             </select>
           </div>
           <div className="row">
             <input className="input grow" placeholder="Ссылка (необязательно)" value={url} onChange={(e) => setUrl(e.target.value)} />
-            <button className="btn primary sm" onClick={create} disabled={!name.trim()}>Создать и привязать</button>
+            <button className="btn primary sm" onClick={create} disabled={busy || !name.trim()}>Создать и привязать</button>
           </div>
         </div>
       )}
@@ -264,13 +304,17 @@ function DelegationsSection({ store, taskId, editable }: { store: Store; taskId:
   const [newName, setNewName] = useState("");
   const [checkAt, setCheckAt] = useState("");
   const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const confirm = useConfirm();
 
-  const load = async () => { try { setItems(await api<Delegation[]>(`/tasks/${taskId}/delegations`)); } catch (e) { store.setError(String(e)); } };
+  const load = async () => { try { setItems(await api<Delegation[]>(`/tasks/${taskId}/delegations`)); } catch (e) { store.setError(errorText(e)); } };
   useEffect(() => { setItems(null); void load(); }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (personId === "new" && store.people[0]) setPersonId(store.people[0].id); }, [store.people]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function create() {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
       let pid = personId;
       if (pid === "new") {
@@ -281,17 +325,17 @@ function DelegationsSection({ store, taskId, editable }: { store: Store; taskId:
       await post<Delegation>("/delegations", { task_id: taskId, person_id: pid, check_at: fromDateTimeInput(checkAt), comment: comment.trim() || null, status: "open" } satisfies DelegationIn);
       setAdding(false); setNewName(""); setCheckAt(""); setComment("");
       await load();
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); } finally { busyRef.current = false; setBusy(false); }
   }
   async function setStatus(d: Delegation, status: "open" | "done") {
     try {
       await put(`/delegations/${d.id}`, { task_id: d.task_id, person_id: d.person_id, check_at: d.check_at ?? null, comment: d.comment ?? null, status });
       await load();
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   }
   async function remove(d: Delegation) {
-    if (!(await confirm(`Снять поручение с ${d.person.name}?`, { danger: true, okLabel: "Снять" }))) return;
-    try { await del(`/delegations/${d.id}`); await load(); } catch (e) { store.setError(String(e)); }
+    if (!(await confirm(`Поручение с ${d.person.name} будет снято; напоминания исполнителю по нему больше не уйдут.`, { title: "Снять поручение?", danger: true, okLabel: "Снять" }))) return;
+    try { await del(`/delegations/${d.id}`); await load(); } catch (e) { store.setError(errorText(e)); }
   }
 
   const open = items?.filter((d) => d.status === "open") ?? [];
@@ -314,7 +358,7 @@ function DelegationsSection({ store, taskId, editable }: { store: Store; taskId:
             <div className="field grow"><label>Комментарий</label><input className="input" placeholder="Что именно ждём" value={comment} onChange={(e) => setComment(e.target.value)} /></div>
           </div>
           <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button className="btn primary sm" onClick={create} disabled={personId === "new" && !newName.trim()}>Поручить</button>
+            <button className="btn primary sm" onClick={create} disabled={busy || (personId === "new" && !newName.trim())}>Поручить</button>
           </div>
         </div>
       )}
@@ -357,26 +401,33 @@ function RemindersSection({ store, taskId }: { store: Store; taskId: number }) {
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState<Recipient>("owner");
   const [assignees, setAssignees] = useState<string[]>([]); // имена исполнителей по открытым поручениям — для подсказки
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const confirm = useConfirm();
 
   const load = async () => {
     try {
       const [rs, ds] = await Promise.all([api<Reminder[]>(`/tasks/${taskId}/reminders`), api<Delegation[]>(`/tasks/${taskId}/delegations`)]);
       setItems(rs); setAssignees(ds.filter((d) => d.status === "open").map((d) => d.person.name));
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); }
   };
   useEffect(() => { setItems(null); void load(); }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function create() {
     const iso = fromDateTimeInput(fireAt);
-    if (!iso || channels.length === 0) return;
+    if (!iso || channels.length === 0 || busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
       await post<Reminder>("/reminders", { task_id: taskId, fire_at: iso, channels, message: message.trim() || null, recipient } satisfies ReminderIn);
       setAdding(false); setFireAt(""); setMessage("");
       await load();
-    } catch (e) { store.setError(String(e)); }
+    } catch (e) { store.setError(errorText(e)); } finally { busyRef.current = false; setBusy(false); }
   }
+  // С3: крестик — через вопрос; событие в календаре Outlook сервер не трогает — говорим об этом
   async function remove(r: Reminder) {
-    try { await del(`/reminders/${r.id}`); await load(); } catch (e) { store.setError(String(e)); }
+    const outlook = r.channels.includes("outlook_calendar");
+    if (!(await confirm(`Напоминание на ${showDateTime(r.fire_at)} (${r.channels.map((c) => CHANNEL_LABEL[c]).join(", ")}) будет удалено${r.sent_at ? " из истории" : ""}.${outlook ? " Событие в календаре Outlook останется — удалите его в календаре сами." : ""}`, { title: "Удалить напоминание?", danger: true, okLabel: "Удалить" }))) return;
+    try { await del(`/reminders/${r.id}`); await load(); } catch (e) { store.setError(errorText(e)); }
   }
   const toggle = (c: Channel) => setChannels((cs) => (cs.includes(c) ? cs.filter((x) => x !== c) : [...cs, c]));
 
@@ -408,7 +459,7 @@ function RemindersSection({ store, taskId }: { store: Store; taskId: number }) {
             )}
           </div>
           <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button className="btn primary sm" onClick={create} disabled={!fireAt || channels.length === 0}>Добавить</button>
+            <button className="btn primary sm" onClick={create} disabled={busy || !fireAt || channels.length === 0}>Добавить</button>
           </div>
           <span className="hint">Сервер проверяет напоминания раз в минуту и шлёт по выбранным каналам. Календарь Outlook — создаёт событие на это время.</span>
         </div>

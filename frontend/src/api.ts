@@ -9,6 +9,19 @@ export class ApiError extends Error {
   }
 }
 
+/** Текст ошибки для человека: 4xx — «Сервер отказал: <detail>», иначе — проблема связи. */
+export function errorText(e: unknown): string {
+  if (e instanceof ApiError) {
+    const raw = e.message.replace(/^\d+\s*/, "");
+    let detail = raw;
+    try { const j = JSON.parse(raw); if (j && typeof j.detail === "string") detail = j.detail; else if (j?.detail) detail = JSON.stringify(j.detail); } catch { /* не JSON */ }
+    if (e.status >= 400 && e.status < 500) return `Сервер отказал: ${detail || e.status}`;
+    return `Ошибка сервера (${e.status}): ${detail}`;
+  }
+  return `Нет связи с сервером: ${e instanceof Error ? e.message : String(e)}`;
+}
+export const isApiStatus = (e: unknown, status: number) => e instanceof ApiError && e.status === status;
+
 // ---- Сессия пользователя (вход через Microsoft) ----
 const SESSION_KEY = "planner.session";
 export const getSession = (): string | null => { try { return localStorage.getItem(SESSION_KEY); } catch { return null; } };
@@ -54,14 +67,25 @@ export const isShared = (a?: Access | null): boolean => a === "edit" || a === "v
 export type Direction = {
   id: number; name: string; description?: string | null; goal?: string | null;
   color?: string | null; status: DirectionStatus; created_at: string; owner?: UserBrief | null; access?: Access | null;
+  deleted_at?: string | null;
 };
-export type DirectionIn = Omit<Direction, "id" | "created_at" | "owner" | "access">;
+export type DirectionIn = Omit<Direction, "id" | "created_at" | "owner" | "access" | "deleted_at">;
 
 export type Project = {
   id: number; direction_id: number; name: string; description?: string | null; goal?: string | null;
   color?: string | null; status: DirectionStatus; created_at: string; owner?: UserBrief | null; access?: Access | null;
+  deleted_at?: string | null;
 };
-export type ProjectIn = Omit<Project, "id" | "created_at" | "owner" | "access">;
+export type MoveMode = "move" | "copy";
+export type ProjectIn = Omit<Project, "id" | "created_at" | "owner" | "access" | "deleted_at"> & { move_mode?: MoveMode; grant_access_user_ids?: number[] };
+/** Кто сейчас видит проект и сохранит ли доступ после переноса в другое направление (GET /projects/{id}/access-preview). */
+export type AccessPreview = { user: UserBrief; permission: Permission; keeps_access: boolean };
+
+/** Что затронет удаление (GET /directions/{id}/impact, /projects/{id}/impact). */
+export type Impact = { projects: number; tasks: number; open_tasks: number; shares: number };
+/** Корзина (GET /trash): мои удалённые объекты с deleted_at. */
+export type TrashOut = { directions: Direction[]; projects: Project[]; tasks: Task[] };
+export type TrashEntity = "direction" | "project" | "task";
 
 export type ShareEntity = "direction" | "project" | "task";
 export type Permission = "view" | "edit";
@@ -73,8 +97,9 @@ export const ENTITY_LABEL: Record<ShareEntity, string> = { direction: "Напр�
 export type Tool = {
   id: number; name: string; type: ToolType; url?: string | null;
   source_ref?: Record<string, unknown> | null; note?: string | null;
+  direction_ids?: number[];   // если бэкенд отдаёт — сохраняем при правке (С8)
 };
-export type ToolIn = Omit<Tool, "id"> & { task_ids: number[]; direction_ids: number[] };
+export type ToolIn = Omit<Tool, "id" | "direction_ids"> & { task_ids: number[]; direction_ids: number[] };
 
 /** Пункт чеклиста внутри задачи (v0.7). id — короткая случайная строка, генерируется на клиенте. */
 export type ChecklistItem = { id: string; text: string; done: boolean };
@@ -84,12 +109,23 @@ export type Task = {
   deadline?: string | null; next_check_at?: string | null; outlook_event_id?: string | null;
   created_at: string; updated_at: string; directions: Direction[]; tools: Tool[]; owner?: UserBrief | null;
   project_id?: number | null; access?: Access | null; assigned_to_me?: boolean; checklist?: ChecklistItem[];
+  deleted_at?: string | null;
 };
 export type TaskIn = {
   title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; direction_ids: number[]; tool_ids: number[]; project_id?: number | null;
   checklist: ChecklistItem[];
+  updated_at?: string;   // версия, от которой правили: при расхождении сервер отвечает 409
 };
+
+/** Тело PUT из карточки задачи. projectId — подставить другой проект (перенос); иначе — как у задачи. */
+export const toIn = (t: Task, projectId?: number | null): TaskIn => ({
+  title: t.title, description: t.description ?? null, status: t.status, priority: t.priority,
+  deadline: t.deadline || null, next_check_at: t.next_check_at || null,
+  direction_ids: [...new Set(t.directions.map((d) => d.id))], tool_ids: [...new Set(t.tools.map((x) => x.id))],
+  project_id: projectId === undefined ? t.project_id ?? null : projectId,
+  checklist: t.checklist ?? [],
+});
 
 export type User = { id: number; email: string; name: string; is_admin: boolean; telegram_chat_id?: string | null; digest_enabled: boolean };
 export type UserBrief = { id: number; name: string; email: string };
@@ -129,6 +165,16 @@ export const CHANNEL_LABEL: Record<Channel, string> = { telegram: "Telegram", em
 export const RECIPIENT_LABEL: Record<Recipient, string> = { owner: "Мне", assignees: "Исполнителю", both: "Мне и исполнителю" };
 export const DIRECTION_STATUS_LABEL: Record<DirectionStatus, string> = { active: "Активно", paused: "На паузе", archived: "В архиве" };
 
+/** Русское склонение: plural(3, "проект", "проекта", "проектов") → «проекта». */
+export function plural(n: number, one: string, few: string, many: string) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
+}
+export const nProjects = (n: number) => `${n} ${plural(n, "проект", "проекта", "проектов")}`;
+export const nTasks = (n: number) => `${n} ${plural(n, "задача", "задачи", "задач")}`;
+
 // Палитра направлений — используется, если у направления не задан свой цвет.
 export const DIRECTION_COLORS = ["#2F6FED", "#0E9F6E", "#D97706", "#DC2626", "#7C3AED", "#0891B2", "#BE185D", "#65A30D"];
 export const dirColor = (d: Direction) => d.color || DIRECTION_COLORS[d.id % DIRECTION_COLORS.length];
@@ -147,6 +193,11 @@ export const fromDateTimeInput = (v: string) => (v ? new Date(v).toISOString() :
 
 const fmtDate = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" });
 const fmtDateTime = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-export const showDate = (iso?: string | null) => (iso ? fmtDate.format(new Date(iso)) : "");
+/** Дата без времени («2026-09-04») — это календарный день, а не полночь UTC: разбираем как локальную (Н6). */
+const parseDate = (iso: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
+};
+export const showDate = (iso?: string | null) => (iso ? fmtDate.format(parseDate(iso)) : "");
 export const showDateTime = (iso?: string | null) => (iso ? fmtDateTime.format(new Date(iso)) : "");
 export const isOverdue = (iso?: string | null) => !!iso && new Date(iso).getTime() < Date.now();

@@ -1,6 +1,7 @@
 """Аутентификация.
 Два способа: (1) Bearer-JWT нашей сессии, выданный после входа через Microsoft; (2) служебный X-API-Token —
 для Swagger, скриптов и планировщика; он действует от имени владельца (OWNER_EMAIL)."""
+import secrets
 from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -43,14 +44,16 @@ def current_user(
 ) -> models.User:
     if creds and creds.scheme.lower() == "bearer":
         try:
-            data = jwt.decode(creds.credentials, settings.session_secret, algorithms=["HS256"])
-        except jwt.PyJWTError:
+            # exp и sub обязательны: без exp сессия была бы бессрочной, без числового sub — 500 вместо 401
+            data = jwt.decode(creds.credentials, settings.session_secret, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+            uid = int(data["sub"])
+        except (jwt.PyJWTError, KeyError, TypeError, ValueError):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session expired")
-        u = db.get(models.User, int(data["sub"]))
+        u = db.get(models.User, uid)
         if not u:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
         return u
-    if token and token == settings.api_token:
+    if token and secrets.compare_digest(token.encode(), settings.api_token.encode()):  # Н1: сравнение за постоянное время
         return owner_user(db)
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bad token")
 

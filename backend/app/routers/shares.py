@@ -28,7 +28,7 @@ def _entity(db: Session, entity_type: str, entity_id: int):
     if not model:
         raise HTTPException(400, "entity_type: direction | project | task")
     obj = db.get(model, entity_id)
-    if not obj:
+    if not obj or obj.deleted_at is not None:   # то, что в корзине, расшарить нельзя
         raise HTTPException(404, f"{entity_type} {entity_id} not found")
     return obj
 
@@ -88,7 +88,7 @@ def _direction_id(obj) -> int | None:
 def find_or_invite_user(db: Session, email: str) -> models.User:
     """Пользователь по почте; если ещё не входил — заготовка, которую подхватит первый вход через Microsoft."""
     email = email.strip().lower()
-    if "@" not in email:
+    if not schemas.EMAIL_RE.match(email):   # Н2: «@cis.kz» без локальной части создавал пользователя с пустым именем
         raise HTTPException(400, "Укажите рабочую почту, например n.abilkhanov@cis.kz")
     domain = email.split("@")[-1]
     if settings.allowed_domains and domain not in settings.allowed_domains:
@@ -174,7 +174,7 @@ def with_me(db: Session = Depends(get_db), user: models.User = Depends(current_u
     out = []
     for s in db.scalars(select(models.Share).where(models.Share.user_id == user.id).order_by(models.Share.created_at.desc())).all():
         obj = db.get(ENTITY[s.entity_type], s.entity_id)
-        if not obj: continue
+        if not obj or obj.deleted_at is not None: continue
         out.append(schemas.SharedWithMe(entity_type=s.entity_type, entity_id=s.entity_id, permission=s.permission, name=_name(obj),
                                         direction_id=_direction_id(obj), shared_by=s.granter, created_at=s.created_at))
     return out

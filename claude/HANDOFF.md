@@ -1,6 +1,6 @@
 # HANDOFF — текущее состояние и следующий шаг
 
-_Обновлено: 2026-09-04, сессия 7 (Cowork) — адверсариальное ревью и тесты, код не менялся. Версия v0.7 — чеклист в задаче + перенос задач между проектами перетаскиванием; v0.6.1 — понятные ошибки MCP (v0.6: проекты, совместный доступ; v0.5: MCP-коннектор)._
+_Обновлено: 2026-09-04, сессия 7 (Cowork). **Версия v0.8** — починка по итогам адверсариального ревью: корзина, архив, «без направления», перенос проекта, права, OAuth, планировщик, безопасный confirm/автосейв (ждёт коммита и `alembic upgrade head`). v0.7 — чеклист в задаче + перенос задач между проектами перетаскиванием; v0.6.1 — понятные ошибки MCP (v0.6: проекты, совместный доступ; v0.5: MCP-коннектор)._
 
 ## Состояние
 | Что | Статус |
@@ -21,21 +21,26 @@ _Обновлено: 2026-09-04, сессия 7 (Cowork) — адверсари�
 | v0.6 Проекты + совместный доступ | ✅ закоммичено (`d78411e`), задеплоено; миграция `a2b3c4d5e6f7` (projects, shares, tasks.project_id). Проверка в проде с коллегой — частично (Нурлан 04.09 создал через Claude ~30 задач) |
 | v0.6.1 Понятные ошибки MCP | ✅ в git (`df6895b`) |
 | v0.7 Чеклист + перенос задач между проектами | ✅ в git (`cbbea7f`); в проде проверить `alembic current` = `b3c4d5e6f7a8` |
-| **Адверсариальное ревью (сессия 7)** | ✅ `claude/REVIEW-2026-09-04.md` (сводка + план по фазам), `claude/review/*.md` (подробности). Тесты: `backend/tests/` (pytest, `86 failed, 26 passed`), `frontend/src/__tests__/` (vitest, `13 failed, 35 passed`). Падающий тест = подтверждённый баг. **Ждёт коммита; починка — следующие сессии** |
+| Адверсариальное ревью (сессия 7) | ✅ `claude/REVIEW-2026-09-04.md`, `claude/review/*.md` — все находки К/В/С и почти все Н закрыты в v0.8 |
+| **v0.8 починка** | ✅ код + миграция `c4d5e6f7a8b9` + тесты: pytest **147 passed**, vitest **61 passed**, `npm run build` чисто, сквозной сценарий на стенде пройден. **Ждёт: секреты в Railway/.env, `alembic upgrade head`, коммит/пуш, проверка в проде** |
 | Вход коллег в Entra | ✅ «Требуется назначение?» = Нет — входит любой @cis.kz |
 | Каналы в проде | ✅ Telegram, email и календарь Outlook через Graph проверены. Секрет Graph был вставлен в чат — стоит перевыпустить. |
 
 ## Следующий шаг (по порядку)
-0. **Владелец:** закоммитить тесты и отчёт (`git add . / commit -m "review: адверсариальное ревью, pytest + vitest" / push`). Проверить, что `pytest`/`npm test` запускаются локально (команды — в конце `REVIEW-2026-09-04.md`).
-1. **Владелец — ответить на 5 вопросов** из раздела «Решения, которые нужны от владельца» в `REVIEW-2026-09-04.md`: сироты при удалении направления; перенос проекта между направлениями; права на справочник людей; раздел «Архив»; soft-delete.
-2. **Сессия починки, фаза 1 (UI, потеря данных одним движением):** F-К1 меню «Без проекта» + ПКМ только на шапке; F-К2 confirm (фокус на «Отмена», ввод названия для непустых, заголовок по типу сущности, глушить Enter для других слушателей); F-В1/В2 автосейв (flush при закрытии + счётчик ревизий); F-В3 плашка «Обновить» вместо автоперезагрузки; F-В4/В5 раздел «Архив» + мягкий confirm; F-С2 `if (busy) return`; F-С3, F-С6/С7. После каждой правки — `npm test` (падений должно становиться меньше, регрессия зелёная) и `npm run build`.
-3. **Фаза 2 (безопасность/права, бэкенд):** B-К2 секреты обязательны; B-К1 `task_id` неизменяем в PUT поручения/напоминания; M-К1/К2 OAuth (cookie-привязка consent, хост redirect на странице, `client_id`+`redirect_uri` в `/oauth/token`, атомарный `used`); B-В1/В2/В5 + M-В1 единая правка `_apply`/`_owner_for_new`/`projects.update` и `_editable` в MCP; B-В4; M-В2/С10; M-В3…В6; M-С12. После — `python -m pytest tests -q`.
-4. Фазы 3–6 по REVIEW (валидация и `shares`, планировщик, разрешение имён в MCP, мелкий UX).
-5. Потом — прежние планы: проверка v0.7 в проде, роли «руководитель/команда», агенты тулов; перевыпустить client secret в Entra.
+0. **Владелец — секреты (иначе бэкенд v0.8 не стартует):** в Railway у сервиса `backend` проверить `API_TOKEN` и `SESSION_SECRET` — оба ≥16 символов и не `change-me*`; если менялся `API_TOKEN` — обновить его и в переменных фронта `VITE_API_TOKEN` (если задан) и в Swagger. То же в локальном `backend/.env`.
+1. **Владелец:** `alembic upgrade head` → `alembic current` = `c4d5e6f7a8b9 (head)`; `npm run build`; `git add . / commit / push`. В логах Railway backend: `Running upgrade b3c4d5e6f7a8 -> c4d5e6f7a8b9`. На сайте в углу — v0.8.
+2. **Проверка в проде (чеклист):** карта проектов → ПКМ на «Без проекта» — своё меню; ПКМ на шапке направления → «Удалить направление…» → диалог с вводом названия, Enter ничего не делает; после удаления тост «Отменить» → направление вернулось; «Корзина» и «Архив» в низу сайдбара; «В архив» у проекта → карточка «В архиве» на странице направления; карточка задачи: набрать текст и сразу Esc — правка сохранилась; открыть одну задачу в двух вкладках, поменять в обеих → во второй сообщение о конфликте; ProjectModal → сменить направление → блок «Перенос» с людьми. Голосом через Claude: «возьми в работу договор» при выполненной задаче «Договор» — должен уточнить, а не переоткрыть.
+3. Коллегам: переподключить коннектор Claude не нужно (токены живы), но при новой авторизации страница согласия теперь показывает адрес возврата и требует тот же браузер.
+4. Дальше по желанию: перестановка пунктов чеклиста, пункт → задача, роли «руководитель/команда», агенты тулов; перевыпустить client secret в Entra.
+
+## Что нового в коде v0.8 (для следующей сессии)
+- Бэкенд: `app/trash.py` (корзина: soft/hard delete, restore, `purge_trash`, `/trash`, `/impact`); `scope.alive()`, `is_deleted()`, `orphan_clause()`, `in_my_container()`; `Task.directions`/`Direction.projects`/`Project.tasks` отдают только живые записи (полные — `Direction.all_projects`, `Project.all_tasks`); `ProjectIn.move_mode`/`grant_access_user_ids`; `TaskIn.updated_at` → 409; `Settings` валидирует секреты; `mcp_oauth`: cookie `mcp_auth` + хеш в `McpPendingAuth.scope` (`_pack_scope`), `REDIRECT_HOST_ALLOWLIST`, `/oauth/revoke`, `cleanup_oauth()`; `scheduler.housekeeping()` раз в сутки; `mcp_tools`: `_norm`, `_str`, `parse_int`, `_alive`, `warning`/`skipped` в ответах, `get_overview.undelivered_reminders`.
+- Фронт: `layers.ts` (`useEscape`, `useDirtyFlag`, `layerCount`), `deletion.tsx` (`useDeletion`: impact → confirm → тост → restore), `toast.tsx`, `confirm.tsx` (`typeToConfirm`, `details`), `Trash.tsx`, `Archive.tsx`, `MiniMenu.tsx`, `update.ts`; `api.ts`: `toIn`, `errorText`, типы `Impact/TrashOut/AccessPreview/MoveMode`. Задача с `project_id`, которого нет в `store.projects`, везде считается «без проекта» («проект в корзине»).
+- Стенд: `python _serve_ui.py 8000` (секреты уже длинные), сквозной сценарий — `review/smoke.py` вне репо.
 
 ## Тесты (для следующей сессии)
-- Бэкенд: `backend/tests/conftest.py` — sqlite во временной папке, `PRAGMA foreign_keys=ON`, фикстуры `client`, `jack` (владелец, `X-API-Token` и Bearer MCP), `nur`, `aida`, помощник `api`. Имена `test_<Уровень><№>_*` соответствуют находкам в `claude/review/backend_*.md`; `test_ok_*` — регрессия. Запуск из `backend/` в venv: `python -m pytest tests -q` (`-k K1`, `-k test_ok_`, `-x --tb=short`).
-- Фронт: `frontend/vitest.config.ts` (jsdom, `TZ=America/New_York`, чтобы ловить ошибки пояса), `tsconfig.test.json`; тесты в `src/__tests__/`, фикстуры стора — `fixtures.ts`. `npm test`; один файл — `npx vitest run src/__tests__/confirm.test.tsx`. `toIn` не экспортирован — тест `it.todo`.
+- Бэкенд: `backend/tests/conftest.py` — sqlite во временной папке, `PRAGMA foreign_keys=ON`, фикстуры `client`, `jack` (владелец), `nur`, `aida`, помощник `api`; секреты тестов — константы `API_TOKEN`/`SESSION_SECRET` в conftest. Имена `test_<Уровень><№>_*` соответствуют находкам в `claude/review/backend_*.md`; `test_ok_*` — регрессия; `test_v08_*` — корзина, перенос проекта, MCP/планировщик v0.8. Сейчас все 147 зелёные. Запуск из `backend/` в venv: `python -m pytest tests -q` (`-k K1`, `-k test_ok_`, `-x --tb=short`).
+- Фронт: `frontend/vitest.config.ts` (jsdom, `TZ=America/New_York`, чтобы ловить ошибки пояса), `tsconfig.test.json`; тесты в `src/__tests__/`, фикстуры стора — `fixtures.ts`. `npm test` (61 зелёных, `v08.test.tsx` — корзина/тост/перенос); один файл — `npx vitest run src/__tests__/confirm.test.tsx`.
 - В среде Claude: `pip install -r requirements.txt pytest`, `npm ci`; оба прогона < 30 с.
 
 ## Что в UI (v0.2–v0.6)

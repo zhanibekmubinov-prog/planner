@@ -1,6 +1,6 @@
 """Проверка MCP-коннектора на sqlite: OAuth-флоу + инструменты. Запуск: python test_mcp.py"""
 import base64, hashlib, json, os, secrets
-os.environ.update({"DATABASE_URL": "sqlite:///./_mcp_test.db", "API_TOKEN": "tok", "OWNER_EMAIL": "jack@cis.kz",
+os.environ.update({"DATABASE_URL": "sqlite:///./_mcp_test.db", "API_TOKEN": "test-api-token-0123456789", "SESSION_SECRET": "test-session-secret-0123456789", "OWNER_EMAIL": "jack@cis.kz",
                    "SCHEDULER_ENABLED": "false", "FRONTEND_URL": "https://cis-planner.up.railway.app", "APP_TIMEZONE": "Asia/Oral"})
 if os.path.exists("_mcp_test.db"): os.remove("_mcp_test.db")
 from fastapi.testclient import TestClient
@@ -38,7 +38,7 @@ assert r.status_code == 302 and "/oauth/consent?k=" in r.headers["location"], r.
 key = r.headers["location"].split("k=")[1]
 page = c.get(f"/oauth/consent?k={key}"); assert page.status_code == 200 and "CIS Planner" in page.text
 bad = c.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": "wrong"}); assert bad.status_code == 401
-ok = c.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": "tok"}, follow_redirects=False)
+ok = c.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": "test-api-token-0123456789"}, follow_redirects=False)
 assert ok.status_code == 302 and ok.headers["location"].startswith(R + "?code="), ok.headers
 code = ok.headers["location"].split("code=")[1].split("&")[0]
 assert "state=xyz" in ok.headers["location"]
@@ -99,7 +99,7 @@ d, err = call(access, "add_tool", name="Таблица остатков", type="
 d, err = call(access, "get_overview"); assert not err and d["overdue"] == [] and d["open_tasks_total"] == 2, d
 d, err = call(access, "list_people"); assert not err and any(p["delegated_by_me"]["open"] == 2 for p in d["people"]), d
 # служебный токен как Bearer = владелец
-d, err = call("tok", "list_tasks", include_done=True); assert not err and d["count"] == 3
+d, err = call("test-api-token-0123456789", "list_tasks", include_done=True); assert not err and d["count"] == 3
 # неизвестный инструмент
 d, err = call(access, "delete_task", task="1"); assert err
 print("MCP tools: ok")

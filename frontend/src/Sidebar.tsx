@@ -7,12 +7,14 @@ import type { User } from "./api";
 export type View =
   | { kind: "overview" }
   | { kind: "direction"; directionId: number }                                    // карта проектов направления
-  | { kind: "board"; directionId: number | null; projectId?: number | "none" }    // канбан: все / направление / проект / без проекта
+  | { kind: "board"; directionId: number | null; projectId?: number | "none"; orphans?: boolean }    // канбан: все / направление / проект / без проекта / без направления
   | { kind: "people" } | { kind: "tools" } | { kind: "shared" }
-  | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number } | { kind: "inbox" };
+  | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number } | { kind: "inbox" }
+  | { kind: "archive" } | { kind: "trash" };
 
 type Props = {
   directions: Direction[]; projects: Project[]; tasks: Task[]; view: View; mindmapCount: number; inboxCount: number; sharedCount: number;
+  trashCount: number;
   me: User | null; onProfile: () => void;
   onView: (v: View) => void; onNewDirection: () => void; onNewProject: (d: Direction) => void;
   onDirectionMenu: (d: Direction, e: React.MouseEvent) => void; onProjectMenu: (p: Project, e: React.MouseEvent) => void;
@@ -23,26 +25,36 @@ const EXP_KEY = "planner.dirs.expanded";
 const readOpen = () => { try { return localStorage.getItem(OPEN_KEY) !== "0"; } catch { return true; } };
 const readExpanded = (): number[] => { try { return JSON.parse(localStorage.getItem(EXP_KEY) || "[]"); } catch { return []; } };
 
-export default function Sidebar({ directions, projects, tasks, view, mindmapCount, inboxCount, sharedCount, me, onProfile, onView, onNewDirection, onNewProject, onDirectionMenu, onProjectMenu }: Props) {
+export default function Sidebar({ directions, projects, tasks, view, mindmapCount, inboxCount, sharedCount, trashCount, me, onProfile, onView, onNewDirection, onNewProject, onDirectionMenu, onProjectMenu }: Props) {
   const [open, setOpen] = useState(readOpen);
   const [expanded, setExpanded] = useState<number[]>(readExpanded);
   const [filter, setFilter] = useState("");
   useEffect(() => { try { localStorage.setItem(OPEN_KEY, open ? "1" : "0"); } catch { /* приватный режим */ } }, [open]);
   useEffect(() => { try { localStorage.setItem(EXP_KEY, JSON.stringify(expanded)); } catch { /* приватный режим */ } }, [expanded]);
+  // Н8: чистим id направлений, которых больше нет (после первой загрузки)
+  useEffect(() => {
+    if (!directions.length) return;
+    setExpanded((xs) => { const ys = xs.filter((id) => directions.some((d) => d.id === id)); return ys.length === xs.length ? xs : ys; });
+  }, [directions]);
 
   const openTasks = tasks.filter((t) => t.status !== "done");
-  const countFor = (id: number) => openTasks.filter((t) => t.directions.some((d) => d.id === id)).length;
+  // В5: задачи архивных проектов в счётчик направления не входят — как и на карте проектов
+  const archivedProjectIds = new Set(projects.filter((p) => p.status === "archived").map((p) => p.id));
+  const countFor = (id: number) => openTasks.filter((t) => t.directions.some((d) => d.id === id) && !(t.project_id != null && archivedProjectIds.has(t.project_id))).length;
   const countProject = (id: number) => openTasks.filter((t) => t.project_id === id).length;
+  const orphans = openTasks.filter((t) => t.directions.length === 0).length;
   // Доля закрытых задач направления — тонкая шкала под названием
   const doneRatio = (id: number) => {
     const all = tasks.filter((t) => t.directions.some((d) => d.id === id));
     return all.length ? all.filter((t) => t.status === "done").length / all.length : 0;
   };
-  const isAllTasks = view.kind === "board" && view.directionId === null;
+  const isAllTasks = view.kind === "board" && view.directionId === null && !view.orphans;
+  const isOrphans = view.kind === "board" && view.directionId === null && !!view.orphans;
   const isDir = (id: number) => (view.kind === "direction" && view.directionId === id) || (view.kind === "board" && view.directionId === id && view.projectId === undefined);
   const isProject = (id: number) => view.kind === "board" && view.projectId === id;
   const inDir = (id: number) => (view.kind === "direction" || view.kind === "board") && view.directionId === id;
   const visible = directions.filter((d) => d.status !== "archived");
+  const archived = directions.filter((d) => d.status === "archived").length + projects.filter((p) => p.status === "archived" && directions.some((d) => d.id === p.direction_id && d.status !== "archived")).length;
   const q = filter.trim().toLowerCase();
   const shown = q ? visible.filter((d) => d.name.toLowerCase().includes(q) || projects.some((p) => p.direction_id === d.id && p.name.toLowerCase().includes(q))) : visible;
   const activeDir = (view.kind === "board" || view.kind === "direction") && view.directionId ? directions.find((d) => d.id === view.directionId) : null;
@@ -53,7 +65,7 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
 
   return (
     <aside className="side">
-      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.7</span></div>
+      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.8</span></div>
       {me && <UserChip me={me} onClick={onProfile} />}
 
       <div className="side-list side-top">
@@ -158,6 +170,27 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
           {open && visible.length === 0 && <p className="side-empty">Пока нет направлений — нажмите «+».</p>}
           {open && q && shown.length === 0 && <p className="side-empty">Ничего не найдено.</p>}
         </div>
+      </div>
+
+      {/* Служебные разделы (v0.8): сироты, архив, корзина — тише основных, но всегда под рукой */}
+      <div className="side-list side-foot">
+        {orphans > 0 && (
+          <button className={`side-item aux ${isOrphans ? "active" : ""}`} onClick={() => onView({ kind: "board", directionId: null, orphans: true })} title="Задачи, у которых нет ни одного направления">
+            <span className="swatch hollow-swatch" />
+            <span className="name">Без направления</span>
+            <span className="count">{orphans}</span>
+          </button>
+        )}
+        <button className={`side-item aux ${view.kind === "archive" ? "active" : ""}`} onClick={() => onView({ kind: "archive" })} title="Направления и проекты в архиве">
+          <span className="swatch archive-swatch" />
+          <span className="name">Архив</span>
+          <span className="count">{archived || ""}</span>
+        </button>
+        <button className={`side-item aux ${view.kind === "trash" ? "active" : ""}`} onClick={() => onView({ kind: "trash" })} title="Удалённое — можно вернуть в течение 30 дней">
+          <span className="swatch trash-swatch" />
+          <span className="name">Корзина</span>
+          <span className="count">{trashCount || ""}</span>
+        </button>
       </div>
     </aside>
   );

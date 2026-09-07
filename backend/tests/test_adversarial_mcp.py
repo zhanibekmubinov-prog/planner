@@ -16,7 +16,19 @@ import pytest
 from sqlalchemy import select
 
 from app import models
-from tests.conftest import NUR_EMAIL, AIDA_EMAIL, count, link_person, ok
+from tests.conftest import API_TOKEN, NUR_EMAIL, AIDA_EMAIL, count, link_person, ok
+
+# v0.8: redirect_uri принимается только на разрешённые хосты (claude.ai, claude.com, anthropic.com, localhost) —
+# тесты регистрируют клиентов на claude.ai; лимит регистраций (в памяти процесса) сбрасывается перед каждым тестом.
+CB = "https://claude.ai/api/mcp/auth_callback"
+
+
+@pytest.fixture(autouse=True)
+def _reset_register_limit():
+    from app.routers import mcp_oauth
+    mcp_oauth._reg_hits.clear()
+    yield
+    mcp_oauth._reg_hits.clear()
 
 
 # ── Вспомогательное ──────────────────────────────────────────────────────────
@@ -71,7 +83,7 @@ def test_V1_editor_cannot_remove_owner_direction(client, jack, nur, shared_world
     d2, err2 = call(client, nur, "update_task", task="Подписать договор", project=None)
     after = must_ok(client, jack, "get_task", task="Подписать договор")
     assert err1 and err2, f"редактор снял задачу с направления/проекта владельца: {d1} | {d2}"
-    assert [x["name"] for x in after["directions"]] == ["Эмба"] and after["project"], f"задача Джека потеряла направление/проект: {after}"
+    assert after["directions"] == ["Эмба"] and after["project"], f"задача Джека потеряла направление/проект: {after}"
 
 
 def test_V1_add_tool_directions_must_be_own_or_editable(client, jack, nur, shared_world):
@@ -109,9 +121,9 @@ def test_V4_batch_size_limited(client, jack):
 
 def test_V3_oauth_register_capped(client):
     """В3. /oauth/register без аутентификации и лимитов (200 клиентов за 1.4 с). Ожидается: после серии
-    регистраций подряд — 429 (или иной отказ), а не бесконечные 201."""
-    statuses = [client.post("/oauth/register", json={"client_name": "A", "redirect_uris": [f"https://x.test/{i}"]}).status_code for i in range(30)]
-    assert any(s != 201 for s in statuses), f"30 регистраций подряд — все 201: {statuses}"
+    регистраций подряд — 429, а не бесконечные 201 (первые 10 с одного IP проходят)."""
+    statuses = [client.post("/oauth/register", json={"client_name": "A", "redirect_uris": [f"https://claude.ai/cb/{i}"]}).status_code for i in range(30)]
+    assert statuses[0] == 201 and 429 in statuses, f"30 регистраций подряд — лимит не сработал: {statuses}"
 
 
 # ═══════════════════════ Критично (OAuth) ═══════════════════════
@@ -122,7 +134,7 @@ def _pkce():
     return v, ch
 
 
-def _authorize(client, redirect="https://client.test/cb"):
+def _authorize(client, redirect=CB):
     """Регистрация клиента + /oauth/authorize (режим без Microsoft → редирект на /oauth/consent). Возвращает (client_id, key, verifier)."""
     reg = client.post("/oauth/register", json={"client_name": "Claude", "redirect_uris": [redirect]}).json()
     verifier, challenge = _pkce()
@@ -134,7 +146,7 @@ def _authorize(client, redirect="https://client.test/cb"):
 
 
 def _consent_allow(client, key):
-    r = client.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": "tok"}, follow_redirects=False)
+    r = client.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": API_TOKEN}, follow_redirects=False)
     assert r.status_code == 302, r.text
     return up.parse_qs(up.urlparse(r.headers["location"]).query)["code"][0]
 
@@ -160,7 +172,7 @@ def test_K2_auth_code_single_use_under_parallel_exchange(client, db, jack, monke
 
     def exchange():
         results.append(client.post("/oauth/token", data={"grant_type": "authorization_code", "code": code, "code_verifier": verifier,
-                                                          "client_id": cid, "redirect_uri": "https://client.test/cb"}).status_code)
+                                                          "client_id": cid, "redirect_uri": CB}).status_code)
     threads = [threading.Thread(target=exchange) for _ in range(4)]
     for t in threads: t.start()
     for t in threads: t.join()
@@ -179,11 +191,13 @@ def test_K1_token_exchange_requires_client_id_and_redirect_uri(client, jack):
 
 def test_K1_consent_page_shows_redirect_host(client, jack):
     """К1. Страница согласия показывает имя клиента («Claude»), но не хост redirect_uri — фишинг одним кликом.
-    Ожидается: хост redirect_uri виден на странице."""
-    cid, key, _ = _authorize(client, redirect="https://evil.example/cb")
+    Ожидается: хост redirect_uri виден на странице (v0.8: чужие хосты вообще не регистрируются — см. allow-list;
+    поэтому проверяем на разрешённом поддомене)."""
+    cid, key, _ = _authorize(client, redirect="https://staging.claude.ai/cb")
     page = client.get(f"/oauth/consent?k={key}")
     assert page.status_code == 200
-    assert "evil.example" in page.text, "на странице согласия не показан адрес, куда уйдёт код (redirect_uri)"
+    assert "staging.claude.ai" in page.text, "на странице согласия не показан адрес, куда уйдёт код (redirect_uri)"
+    assert client.post("/oauth/register", json={"client_name": "x", "redirect_uris": ["https://evil.example/cb"]}).status_code == 400
 
 
 def test_K1_consent_bound_to_initiating_browser(client, jack):
@@ -193,7 +207,7 @@ def test_K1_consent_bound_to_initiating_browser(client, jack):
     from app.main import app
     cid, key, _ = _authorize(client)
     other = TestClient(app, base_url="https://backend.test", raise_server_exceptions=False)  # чужой браузер: без cookies
-    r = other.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": "tok"}, follow_redirects=False)
+    r = other.post("/oauth/consent", data={"k": key, "decision": "allow", "api_token": API_TOKEN}, follow_redirects=False)
     got_code = r.status_code == 302 and "code=" in r.headers.get("location", "")
     assert not got_code, "согласие принято из браузера, который не начинал авторизацию — код выдан"
 
@@ -208,8 +222,8 @@ def test_N9_redirect_uri_validation(client, uri):
 
 def test_N9_code_challenge_format_checked(client):
     """Н9. code_challenge='abc' (не 43 символа base64url) принимается. Ожидается редирект с error=invalid_request."""
-    reg = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": ["https://client.test/cb"]}).json()
-    r = client.get("/oauth/authorize", params={"client_id": reg["client_id"], "redirect_uri": "https://client.test/cb", "response_type": "code",
+    reg = client.post("/oauth/register", json={"client_name": "x", "redirect_uris": [CB]}).json()
+    r = client.get("/oauth/authorize", params={"client_id": reg["client_id"], "redirect_uri": CB, "response_type": "code",
                                               "code_challenge": "abc", "code_challenge_method": "S256"}, follow_redirects=False)
     assert r.status_code == 302 and "error=" in r.headers.get("location", ""), f"короткий code_challenge принят: {r.headers.get('location')}"
 
@@ -372,17 +386,118 @@ def test_ok_mcp_protocol_basics(client, jack):
 
 
 def test_ok_pkce_plain_rejected_and_refresh_rotation(client, jack):
-    """Регрессия. PKCE plain отклоняется; ротация refresh отзывает старый access; повтор refresh → 400."""
-    reg = client.post("/oauth/register", json={"client_name": "Claude", "redirect_uris": ["https://client.test/cb"]}).json()
-    r = client.get("/oauth/authorize", params={"client_id": reg["client_id"], "redirect_uri": "https://client.test/cb", "response_type": "code",
+    """Регрессия. PKCE plain отклоняется; ротация refresh отзывает старый access; повтор refresh → 400.
+    v0.8: обмен кода требует и client_id, и redirect_uri (RFC 6749 §4.1.3); /oauth/revoke отзывает пару."""
+    reg = client.post("/oauth/register", json={"client_name": "Claude", "redirect_uris": [CB]}).json()
+    r = client.get("/oauth/authorize", params={"client_id": reg["client_id"], "redirect_uri": CB, "response_type": "code",
                                               "code_challenge": "abc", "code_challenge_method": "plain"}, follow_redirects=False)
     assert "error=invalid_request" in r.headers["location"]
     cid, key, verifier = _authorize(client)
     code = _consent_allow(client, key)
-    tok = client.post("/oauth/token", data={"grant_type": "authorization_code", "code": code, "code_verifier": verifier, "client_id": cid}).json()
+    tok = client.post("/oauth/token", data={"grant_type": "authorization_code", "code": code, "code_verifier": verifier, "client_id": cid, "redirect_uri": CB}).json()
     h = {"Authorization": f"Bearer {tok['access_token']}", "content-type": "application/json"}
     assert client.post("/mcp", content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}), headers=h).status_code == 200
     r2 = client.post("/oauth/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"]})
     assert r2.status_code == 200
     assert client.post("/mcp", content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}), headers=h).status_code == 401
     assert client.post("/oauth/token", data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"]}).status_code == 400
+    new = r2.json()
+    h2 = {"Authorization": f"Bearer {new['access_token']}", "content-type": "application/json"}
+    assert client.post("/mcp", content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}), headers=h2).status_code == 200
+    assert client.post("/oauth/revoke", data={"token": new["refresh_token"]}).status_code == 200
+    assert client.post("/mcp", content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}), headers=h2).status_code == 401
+    assert client.post("/oauth/token", data={"grant_type": "refresh_token", "refresh_token": new["refresh_token"]}).status_code == 400
+
+
+# ═══════════════════════ v0.8: новые правила ═══════════════════════
+
+def test_v08_yo_and_wordforms_resolve(client, jack):
+    """С3. «отчет по то» находит «Отчёт по ТО» (ё→е, регистр); «договор эмба» — «Договор с Эмбой» (словоформы)."""
+    must_ok(client, jack, "create_task", title="Отчёт по ТО")
+    must_ok(client, jack, "create_task", title="Договор с Эмбой")
+    assert must_ok(client, jack, "get_task", task="отчет по то")["title"] == "Отчёт по ТО"
+    assert must_ok(client, jack, "get_task", task="договор эмба")["title"] == "Договор с Эмбой"
+
+
+def test_v08_done_task_reachable_by_id_and_readable_by_name(client, jack):
+    """С1. Единственное совпадение — выполненная задача: пишущий вызов → ошибка с id в hint; по id — можно; get_task по имени — можно."""
+    t = must_ok(client, jack, "create_task", title="Старый договор", status="done")["task"]
+    d, err = call(client, jack, "set_task_status", task="старый договор", status="in_progress")
+    assert err and str(t["id"]) in d["hint"], d
+    assert must_ok(client, jack, "get_task", task="старый договор")["id"] == t["id"]
+    assert must_ok(client, jack, "set_task_status", task=str(t["id"]), status="in_progress")["to"] == "в работе"
+
+
+def test_v08_past_deadline_warning_and_past_check_at_rejected(client, jack):
+    """Н7. Дедлайн в прошлом — принимается с warning; check_at в прошлом — ToolError."""
+    d = must_ok(client, jack, "create_task", title="Просроченная", deadline="2020-01-01")
+    assert d["task"]["overdue"] and "warning" in d, d
+    d2, err = call(client, jack, "delegate_task", task="Просроченная", person="Кто-то", create_person_if_missing=True, check_at="2020-01-01T10:00")
+    assert err and "прошлом" in d2["error"], d2
+
+
+def test_v08_checklist_duplicates_skipped(client, jack):
+    """Н2. Повторные пункты чеклиста не дублируются — в ответе skipped."""
+    must_ok(client, jack, "create_task", title="Ч")
+    must_ok(client, jack, "add_checklist_items", task="Ч", items=["Цены", "Сроки"])
+    d = must_ok(client, jack, "add_checklist_items", task="Ч", items=["цены.", "Поставщик"])
+    assert d["added"] == 1 and d["skipped"] == ["цены."], d
+    assert must_ok(client, jack, "check_item", task="Ч", item="цены")["done"] is True
+
+
+def test_v08_comma_name_refused_for_create(client, jack):
+    """С4. Название с запятой не создаётся как направление/человек."""
+    d, err = call(client, jack, "create_direction", name="Снабжение, Бурение")
+    assert err and "запятую" in d["error"], d
+    d, err = call(client, jack, "create_person", name="Ержан, Айдос")
+    assert err, d
+
+
+def test_v08_editor_cannot_archive_or_rename_direction(client, jack, nur):
+    """Н6. Редактор направления (edit) может менять цель, но архив и переименование — только владелец."""
+    d = must_ok(client, jack, "create_direction", name="Эмба")["direction"]
+    ok(client.post("/api/shares", json={"entity_type": "direction", "entity_id": d["id"], "email": NUR_EMAIL, "permission": "edit"}, headers=jack.h), 201)
+    assert not call(client, nur, "update_direction", direction="Эмба", goal="новая цель")[1]
+    assert call(client, nur, "update_direction", direction="Эмба", status="archived")[1]
+    assert call(client, nur, "update_direction", direction="Эмба", name="Моё")[1]
+    assert must_ok(client, jack, "list_directions", include_archived=True)["directions"][0]["name"] == "Эмба"
+
+
+def test_v08_direction_editor_can_update_delegation(client, jack, nur):
+    """Н5. Редактор направления правит поручение (как PUT /delegations в REST)."""
+    d = must_ok(client, jack, "create_direction", name="Эмба")["direction"]
+    ok(client.post("/api/shares", json={"entity_type": "direction", "entity_id": d["id"], "email": NUR_EMAIL, "permission": "edit"}, headers=jack.h), 201)
+    must_ok(client, jack, "create_task", title="Поручённая", directions=["Эмба"], assign_to=["Асхат"], create_person_if_missing=True)
+    r = must_ok(client, nur, "update_delegation", task="Поручённая", person="Асхат", comment="уточнить", check_at="2030-01-01T10:00")
+    assert set(r["updated"]) == {"comment", "check_at"}, r
+
+
+def test_v08_soft_deleted_entities_invisible_to_mcp(client, api, jack):
+    """Soft-delete v0.8: задача/направление в корзине не видны через MCP и не находятся по имени; удалить через MCP нельзя."""
+    d = must_ok(client, jack, "create_direction", name="Временное")["direction"]
+    t = must_ok(client, jack, "create_task", title="Удалить меня", directions=["Временное"])["task"]
+    ok(client.delete(f"/api/tasks/{t['id']}", headers=jack.h), 204)
+    assert must_ok(client, jack, "list_tasks")["count"] == 0
+    assert call(client, jack, "get_task", task="Удалить меня")[1]
+    assert call(client, jack, "get_task", task=str(t["id"]))[1]
+    ok(client.delete(f"/api/directions/{d['id']}", headers=jack.h), 204)
+    assert must_ok(client, jack, "list_directions", include_archived=True)["directions"] == []
+    assert "delete_task" not in {x["name"] for x in rpc(client, jack, "tools/list").json()["result"]["tools"]}
+
+
+def test_v08_string_fields_validated(client, jack):
+    """Н3. title/name списком → ошибка аргумента; color — только #rrggbb; url — только ссылка; длинный title — ошибка."""
+    assert call(client, jack, "create_task", title=["a", "b"])[1]
+    assert call(client, jack, "create_direction", name="X", color="<script>")[1]
+    assert call(client, jack, "add_tool", name="T", url=123)[1]
+    assert call(client, jack, "create_task", title="x" * 301)[1]
+    assert not call(client, jack, "create_direction", name="X", color="#0F766E")[1]
+
+
+def test_v08_run_now_admin_only_and_manual_rate_limit(client, jack, nur):
+    """С12. /notify/run-now — только админ; /notify/digest — не чаще 1/мин на пользователя."""
+    assert client.post("/api/notify/run-now", headers=nur.h).status_code == 403
+    assert client.post("/api/notify/run-now", headers=jack.h).status_code == 200
+    r1 = client.post("/api/notify/digest", json={}, headers=nur.h)
+    r2 = client.post("/api/notify/digest", json={}, headers=nur.h)
+    assert r1.status_code == 200 and r2.status_code == 429, (r1.status_code, r2.status_code)

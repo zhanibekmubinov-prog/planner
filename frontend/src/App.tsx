@@ -15,7 +15,9 @@ import Overview from "./Overview";
 import ProjectMenu, { ProjectAnchor, projectAnchorFromEvent, projectBody, ProjectModal, RenameProjectModal } from "./ProjectMenu";
 import ShareModal, { ShareTarget } from "./ShareModal";
 import SharedPage from "./SharedPage";
-import Sidebar, { View } from "./Sidebar";
+import Sidebar, { SidebarProps, View } from "./Sidebar";
+import MobileNav from "./MobileNav";
+import { useIsMobile } from "./mobile";
 import { useStore } from "./store";
 import TaskPanel from "./TaskPanel";
 import { useToast } from "./toast";
@@ -45,6 +47,7 @@ function Workspace() {
   const [share, setShare] = useState<ShareTarget | null>(null);
   const toast = useToast();
   const updateReady = useUpdateAvailable();
+  const mobile = useIsMobile();
   const openMenu = (d: Direction, e: React.MouseEvent) => setMenu(anchorFromEvent(d, e));
   const openTaskAnywhere = (id: number) => { setView({ kind: "board", directionId: null }); setSelectedId(id); };
   // В4: вернуть проект из архива прямо с карты проектов
@@ -101,16 +104,19 @@ function Workspace() {
   };
   const sharedOpen = store.shared.length;
 
+  const navProps: SidebarProps = {
+    directions: store.directions, projects: store.projects, tasks: store.tasks, view, mindmapCount: store.mindmaps.length,
+    inboxCount: store.inbox.filter((t) => t.status !== "done").length, sharedCount: sharedOpen, me: store.me, onProfile: () => setProfile(true),
+    trashCount: store.trash ? store.trash.directions.length + store.trash.projects.length + store.trash.tasks.length : 0,
+    onView: (v) => { setView(v); if (v.kind !== "board") setSelectedId(null); },
+    onNewDirection: () => setDirModal({ open: true, direction: null }), onNewProject: (d) => setProjModal({ direction: d, project: null }),
+    onDirectionMenu: openMenu, onProjectMenu: openProjectMenu,
+  };
+
   return (
-    <div className="shell">
-      <Sidebar
-        directions={store.directions} projects={store.projects} tasks={store.tasks} view={view} mindmapCount={store.mindmaps.length}
-        inboxCount={store.inbox.filter((t) => t.status !== "done").length} sharedCount={sharedOpen} me={store.me} onProfile={() => setProfile(true)}
-        trashCount={store.trash ? store.trash.directions.length + store.trash.projects.length + store.trash.tasks.length : 0}
-        onView={(v) => { setView(v); if (v.kind !== "board") setSelectedId(null); }}
-        onNewDirection={() => setDirModal({ open: true, direction: null })} onNewProject={(d) => setProjModal({ direction: d, project: null })}
-        onDirectionMenu={openMenu} onProjectMenu={openProjectMenu}
-      />
+    <div className={`shell ${mobile ? "mobile" : ""}`}>
+      {/* Телефон: нижняя панель вкладок вместо левой панели (v0.11) */}
+      {mobile ? <MobileNav {...navProps} /> : <Sidebar {...navProps} />}
 
       <main className="main">
         {updateReady && (

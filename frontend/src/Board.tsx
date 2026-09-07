@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { canEdit, Direction, dirColor, errorText, isOverdue, post, Project, projColor, put, showDate, STATUS_LABEL, STATUSES, Task, TaskIn, TaskStatus, toIn } from "./api";
 import { checklistProgress } from "./Checklist";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
+import { useIsMobile } from "./mobile";
+import MiniMenu, { miniAnchor, MiniAnchor } from "./MiniMenu";
 
 type Props = {
   store: Store; direction: Direction | null; project: Project | null; looseOnly: boolean; orphans?: boolean; selectedId: number | null;
@@ -12,7 +15,9 @@ type Props = {
 };
 
 export default function Board({ store, direction, project, looseOnly, orphans = false, selectedId, onSelect, onEditDirection, onOpenDirection, onEditProject, onShare, onOpenMindmap, onMindmaps }: Props) {
-  const [filter, setFilter] = useState<TaskStatus | "all">("all");
+  const mobile = useIsMobile();
+  // Телефон (v0.11): доска — одна колонка выбранного статуса, стартуем с «В работе»
+  const [filter, setFilter] = useState<TaskStatus | "all">(() => (mobile ? "in_progress" : "all"));
   const [hideDone, setHideDone] = useState(false);
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -93,16 +98,16 @@ export default function Board({ store, direction, project, looseOnly, orphans = 
         })()}
         <span className="spacer" />
         <span className="saving">{busy ? "сохраняю…" : ""}</span>
-        {editable && <button className="btn primary" onClick={() => setAdding("backlog")}>+ Задача</button>}
+        {editable && <button className="btn primary" onClick={() => setAdding(filter === "all" ? "backlog" : filter)}>+ Задача</button>}
         {(project?.goal || (!project && direction?.goal)) && <div className="goal">{project ? project.goal : direction?.goal}</div>}
       </div>
 
       <div className="filters tabs" role="tablist" aria-label="Фильтр по статусу">
-        <button role="tab" aria-selected={filter === "all"} className={`tab ${filter === "all" ? "on" : ""}`} onClick={() => setFilter("all")}>
+        <button role="tab" aria-selected={filter === "all"} className={`tab all ${filter === "all" ? "on" : ""}`} onClick={() => setFilter("all")}>
           Все <span className="n">{tasks.length}</span>
         </button>
         {STATUSES.map((s) => (
-          <button key={s} role="tab" aria-selected={filter === s} className={`tab st-${s} ${filter === s ? "on" : ""}`} onClick={() => setFilter(filter === s ? "all" : s)}>
+          <button key={s} role="tab" aria-selected={filter === s} className={`tab st-${s} ${filter === s ? "on" : ""}`} onClick={() => setFilter(filter === s && !mobile ? "all" : s)}>
             {STATUS_LABEL[s]} <span className="n">{counts[s]}</span>
           </button>
         ))}
@@ -125,7 +130,7 @@ export default function Board({ store, direction, project, looseOnly, orphans = 
           )}
         </div>
       ) : (
-        <div className="board" style={{ ["--cols" as string]: columns.length }}>
+        <div className={`board ${columns.length === 1 ? "single" : ""}`} style={{ ["--cols" as string]: columns.length }}>
           {columns.map((s) => {
             const items = tasks.filter((t) => t.status === s);
             return (
@@ -141,7 +146,7 @@ export default function Board({ store, direction, project, looseOnly, orphans = 
                 }}
               >
                 <header className="col-head">
-                  {STATUS_LABEL[s]} <span className="n">{items.length}</span>
+                  <span className="col-name">{STATUS_LABEL[s]}</span> <span className="n">{items.length}</span>
                   {editable && <button className="add" title="Добавить задачу сюда" aria-label="Добавить задачу" onClick={() => setAdding(s)}>+</button>}
                 </header>
                 <div className="col-body">
@@ -149,7 +154,8 @@ export default function Board({ store, direction, project, looseOnly, orphans = 
                   {items.length === 0 && adding !== s && <div className="col-empty">{editable ? "Перетащите задачу сюда" : "Пусто"}</div>}
                   {items.map((t) => (
                     <TaskCard key={t.id} task={t} selected={t.id === selectedId} showDirs={!direction} showProject={!project} project={store.projects.find((p) => p.id === t.project_id)} directions={store.directions} onClick={() => onSelect(t.id)}
-                      mindmap={store.mindmaps.find((m) => m.task_id === t.id)} onOpenMindmap={onOpenMindmap} />
+                      mindmap={store.mindmaps.find((m) => m.task_id === t.id)} onOpenMindmap={onOpenMindmap}
+                      onMove={editable || t.access === "assignee" ? (st) => void moveTask(t.id, st) : undefined} />
                   ))}
                 </div>
               </section>
@@ -208,8 +214,9 @@ function ChecklistTag({ items }: { items?: Task["checklist"] }) {
   );
 }
 
-function TaskCard({ task, selected, showDirs, showProject, project, directions, onClick, mindmap, onOpenMindmap }: { task: Task; selected: boolean; showDirs: boolean; showProject: boolean; project?: Project; directions: Direction[]; onClick: () => void; mindmap?: { id: number }; onOpenMindmap: (id: number) => void }) {
+function TaskCard({ task, selected, showDirs, showProject, project, directions, onClick, mindmap, onOpenMindmap, onMove }: { task: Task; selected: boolean; showDirs: boolean; showProject: boolean; project?: Project; directions: Direction[]; onClick: () => void; mindmap?: { id: number }; onOpenMindmap: (id: number) => void; onMove?: (s: TaskStatus) => void }) {
   const [dragging, setDragging] = useState(false);
+  const [menu, setMenu] = useState<MiniAnchor | null>(null);   // «⋯» на телефоне: перенести в другой статус без перетаскивания
   const shared = showDirs && (task.access === "edit" || task.access === "view");   // на общей доске направления/проекта пометка избыточна
   const overdue = task.status !== "done" && isOverdue(task.deadline ? `${task.deadline}T23:59:59` : null);
   const checkDue = task.status !== "done" && isOverdue(task.next_check_at);
@@ -230,6 +237,18 @@ function TaskCard({ task, selected, showDirs, showProject, project, directions, 
         ))}
       </span>
       <div className="title">{task.title}</div>
+      {onMove && task.access !== "view" && (
+        <button className="card-more" onClick={(e) => setMenu(miniAnchor(e))} aria-label="Сменить статус задачи" title="Сменить статус">⋯</button>
+      )}
+      {menu && onMove && createPortal(
+        /* портал: у карточки при наведении есть transform, а fixed-меню внутри неё считалось бы от карточки */
+        <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <MiniMenu anchor={menu} label={`Статус задачи ${task.title}`} onClose={() => setMenu(null)}
+            title={<><span className={`st st-${task.status}`} /><span className="ctx-name">{task.title}</span></>}
+            items={STATUSES.filter((s) => s !== task.status).map((s) => ({ label: `→ ${STATUS_LABEL[s]}`, onClick: () => onMove(s) }))} />
+        </span>,
+        document.body,
+      )}
       <div className="meta">
         <span className="code mono">#{task.id}</span>
         <span className={`pri p${task.priority}`}>P{task.priority}</span>

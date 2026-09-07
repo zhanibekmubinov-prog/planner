@@ -12,13 +12,14 @@ export type View =
   | { kind: "mindmaps"; directionId?: number | null } | { kind: "mindmap"; id: number } | { kind: "inbox" }
   | { kind: "archive" } | { kind: "trash" } | { kind: "guests" };
 
-type Props = {
+export type SidebarProps = {
   directions: Direction[]; projects: Project[]; tasks: Task[]; view: View; mindmapCount: number; inboxCount: number; sharedCount: number;
   trashCount: number;
   me: User | null; onProfile: () => void;
   onView: (v: View) => void; onNewDirection: () => void; onNewProject: (d: Direction) => void;
   onDirectionMenu: (d: Direction, e: React.MouseEvent) => void; onProjectMenu: (p: Project, e: React.MouseEvent) => void;
 };
+type Props = SidebarProps;
 
 const OPEN_KEY = "planner.dirs.open";
 const EXP_KEY = "planner.dirs.expanded";
@@ -65,7 +66,7 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
 
   return (
     <aside className="side">
-      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.10</span></div>
+      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v0.11</span></div>
       {me && <UserChip me={me} onClick={onProfile} />}
 
       <div className="side-list side-top">

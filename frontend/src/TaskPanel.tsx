@@ -9,6 +9,7 @@ import { useDeletion } from "./deletion";
 import { useDirtyFlag, useEscape } from "./layers";
 import { createMindMap, MindButton } from "./MindMaps";
 import { Store } from "./store";
+import { useIsMobile } from "./mobile";
 
 type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void; onOpenMindmap: (id: number) => void; onShare: () => void };
 
@@ -105,6 +106,112 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
     change({ project_id: id, direction_ids: p && !draft.direction_ids.includes(p.direction_id) ? [...draft.direction_ids, p.direction_id] : draft.direction_ids });
   }
 
+  const mobile = useIsMobile();
+  // Свойства задачи (статус, проект, приоритет, сроки): на компьютере — правая колонка, на телефоне — сразу под названием (v0.11)
+  const props = (
+    <div className="tm-props">
+      <div className="field">
+        <label>Статус</label>
+        <select className={`select st-${draft.status}`} value={draft.status} disabled={task.access === "view"} onChange={(e) => change({ status: e.target.value as TaskStatus })}>
+          {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label>Проект</label>
+        <select className="select" value={draft.project_id ?? ""} disabled={readOnly} onChange={(e) => setProject(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">Без проекта</option>
+          {projectOptions.map((p) => {
+            const d = store.directions.find((x) => x.id === p.direction_id);
+            return <option key={p.id} value={p.id}>{p.name}{d && draft.direction_ids.length !== 1 ? ` · ${d.name}` : ""}</option>;
+          })}
+        </select>
+      </div>
+      <div className="field">
+        <label>Приоритет</label>
+        <select className="select" value={draft.priority} disabled={readOnly} onChange={(e) => change({ priority: Number(e.target.value) })}>
+          <option value={1}>P1 — критично</option><option value={2}>P2 — высокий</option><option value={3}>P3 — обычный</option>
+          <option value={4}>P4 — низкий</option><option value={5}>P5 — когда-нибудь</option>
+        </select>
+      </div>
+      <div className="field">
+        <label>Дедлайн</label>
+        <input className="input" type="date" value={toDateInput(draft.deadline)} disabled={readOnly} onChange={(e) => change({ deadline: e.target.value || null })} />
+      </div>
+      <div className="field">
+        <label>Следующая проверка</label>
+        <input className="input" type="datetime-local" value={toDateTimeInput(draft.next_check_at)} disabled={readOnly} onChange={(e) => change({ next_check_at: fromDateTimeInput(e.target.value) })} />
+      </div>
+    </div>
+  );
+
+  const head = (
+    <>
+    {note && <div className="tm-note" role="alert">{note}</div>}
+    <div className="grow-wrap" data-value={draft.title || "Название задачи"}>
+      <textarea
+        className="title-input" rows={1} value={draft.title} placeholder="Название задачи"
+        onChange={(e) => change({ title: e.target.value.replace(/\n/g, " ") })}
+        onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
+      />
+    </div>
+    </>
+  );
+  const body = (
+    <>
+
+    <div className="section">
+      <div className="section-head">Направления <span className="n">{draft.direction_ids.length}</span></div>
+      <div className="chips">
+        {store.directions.filter((d) => (d.status !== "archived" && canEdit(d.access) && d.access !== "via") || draft.direction_ids.includes(d.id)).map((d) => (
+          <button key={d.id} className={`chip pick ${draft.direction_ids.includes(d.id) ? "on" : ""}`} style={{ ["--pick" as string]: dirColor(d) }}
+            disabled={project?.direction_id === d.id} title={project?.direction_id === d.id ? "Направление проекта — снимается вместе с проектом" : undefined}
+            onClick={() => change({ direction_ids: toggle(draft.direction_ids, d.id) })}>
+            <span className="dot" style={{ background: dirColor(d) }} />{d.name}
+          </button>
+        ))}
+        {store.directions.length === 0 && <span className="hint">Направлений ещё нет — добавьте в левой панели.</span>}
+      </div>
+    </div>
+
+    <div className="field">
+      <label>Описание</label>
+      <textarea className="textarea" rows={5} value={draft.description ?? ""} onChange={(e) => change({ description: e.target.value || null })} placeholder="Что нужно сделать, критерий готовности, контекст" />
+    </div>
+
+    <Checklist items={draft.checklist} onChange={(checklist) => change({ checklist })} readOnly={readOnly} />
+
+    <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} attached={task.tools} editable={!readOnly} />
+
+    <div className="section">
+      <div className="section-head">Майндмап<span className="spacer" /></div>
+      {(() => {
+        const maps = store.mindmaps.filter((m) => m.task_id === task.id);
+        return maps.length ? (
+          <div className="list">{maps.map((m) => (
+            <div key={m.id} className="item">
+              <span className="primary">{m.title}</span>
+              <span className="actions"><MindButton count={1} label="Открыть" onClick={() => onOpenMindmap(m.id)} /></span>
+            </div>
+          ))}</div>
+        ) : readOnly ? <span className="hint">Майндмапа нет.</span> : (
+          <div className="row">
+            <MindButton count={0} label="Создать майндмап задачи" onClick={async () => {
+              try { const d0 = store.directions.find((d) => draft.direction_ids.includes(d.id) && canEdit(d.access) && d.access !== "via");
+              const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: d0?.id ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(errorText(e)); }
+            }} />
+            <span className="hint">Разложить задачу на шаги, риски, вопросы.</span>
+          </div>
+        );
+      })()}
+    </div>
+
+    <div className="danger-zone">
+      <span className="hint">Создана {showDateTime(task.created_at)}{task.owner && !isOwner ? ` · ${task.owner.name}` : ""}</span>
+      {isOwner && <button className="btn danger sm" onClick={remove}>Удалить задачу…</button>}
+    </div>
+    </>
+  );
+
   return (
     <div className="backdrop task-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className={`task-modal ${readOnly ? "ro" : ""}`} role="dialog" aria-modal="true" aria-label="Карточка задачи" style={{ ["--dir" as string]: accent }}>
@@ -124,102 +231,19 @@ export default function TaskPanel({ store, task, onClose, onDeleted, onOpenMindm
         </div>
 
         <div className="tm-body">
-          <fieldset className="tm-main" disabled={readOnly}>
-            {note && <div className="tm-note" role="alert">{note}</div>}
-            <div className="grow-wrap" data-value={draft.title || "Название задачи"}>
-              <textarea
-                className="title-input" rows={1} value={draft.title} placeholder="Название задачи"
-                onChange={(e) => change({ title: e.target.value.replace(/\n/g, " ") })}
-                onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
-              />
+          {mobile ? (
+            /* Телефон: название → свойства → остальное; статус не должен попадать под disabled поручённой задачи, поэтому два fieldset */
+            <div className="tm-main tm-stack">
+              <fieldset className="tm-fs" disabled={readOnly}>{head}</fieldset>
+              {props}
+              <fieldset className="tm-fs" disabled={readOnly}>{body}</fieldset>
             </div>
-
-            <div className="section">
-              <div className="section-head">Направления <span className="n">{draft.direction_ids.length}</span></div>
-              <div className="chips">
-                {store.directions.filter((d) => (d.status !== "archived" && canEdit(d.access) && d.access !== "via") || draft.direction_ids.includes(d.id)).map((d) => (
-                  <button key={d.id} className={`chip pick ${draft.direction_ids.includes(d.id) ? "on" : ""}`} style={{ ["--pick" as string]: dirColor(d) }}
-                    disabled={project?.direction_id === d.id} title={project?.direction_id === d.id ? "Направление проекта — снимается вместе с проектом" : undefined}
-                    onClick={() => change({ direction_ids: toggle(draft.direction_ids, d.id) })}>
-                    <span className="dot" style={{ background: dirColor(d) }} />{d.name}
-                  </button>
-                ))}
-                {store.directions.length === 0 && <span className="hint">Направлений ещё нет — добавьте в левой панели.</span>}
-              </div>
-            </div>
-
-            <div className="field">
-              <label>Описание</label>
-              <textarea className="textarea" rows={5} value={draft.description ?? ""} onChange={(e) => change({ description: e.target.value || null })} placeholder="Что нужно сделать, критерий готовности, контекст" />
-            </div>
-
-            <Checklist items={draft.checklist} onChange={(checklist) => change({ checklist })} readOnly={readOnly} />
-
-            <ToolsSection store={store} selected={draft.tool_ids} onChange={(ids) => change({ tool_ids: ids })} taskId={task.id} attached={task.tools} editable={!readOnly} />
-
-            <div className="section">
-              <div className="section-head">Майндмап<span className="spacer" /></div>
-              {(() => {
-                const maps = store.mindmaps.filter((m) => m.task_id === task.id);
-                return maps.length ? (
-                  <div className="list">{maps.map((m) => (
-                    <div key={m.id} className="item">
-                      <span className="primary">{m.title}</span>
-                      <span className="actions"><MindButton count={1} label="Открыть" onClick={() => onOpenMindmap(m.id)} /></span>
-                    </div>
-                  ))}</div>
-                ) : readOnly ? <span className="hint">Майндмапа нет.</span> : (
-                  <div className="row">
-                    <MindButton count={0} label="Создать майндмап задачи" onClick={async () => {
-                      try { const d0 = store.directions.find((d) => draft.direction_ids.includes(d.id) && canEdit(d.access) && d.access !== "via");
-                      const m = await createMindMap(store, task.title, { task_id: task.id, direction_id: d0?.id ?? null }); onOpenMindmap(m.id); } catch (e) { store.setError(errorText(e)); }
-                    }} />
-                    <span className="hint">Разложить задачу на шаги, риски, вопросы.</span>
-                  </div>
-                );
-              })()}
-            </div>
-
-            <div className="danger-zone">
-              <span className="hint">Создана {showDateTime(task.created_at)}{task.owner && !isOwner ? ` · ${task.owner.name}` : ""}</span>
-              {isOwner && <button className="btn danger sm" onClick={remove}>Удалить задачу…</button>}
-            </div>
-          </fieldset>
+          ) : (
+            <fieldset className="tm-main" disabled={readOnly}>{head}{body}</fieldset>
+          )}
 
           <div className="tm-side">
-            <div className="tm-props">
-              <div className="field">
-                <label>Статус</label>
-                <select className={`select st-${draft.status}`} value={draft.status} disabled={task.access === "view"} onChange={(e) => change({ status: e.target.value as TaskStatus })}>
-                  {STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>Проект</label>
-                <select className="select" value={draft.project_id ?? ""} disabled={readOnly} onChange={(e) => setProject(e.target.value ? Number(e.target.value) : null)}>
-                  <option value="">Без проекта</option>
-                  {projectOptions.map((p) => {
-                    const d = store.directions.find((x) => x.id === p.direction_id);
-                    return <option key={p.id} value={p.id}>{p.name}{d && draft.direction_ids.length !== 1 ? ` · ${d.name}` : ""}</option>;
-                  })}
-                </select>
-              </div>
-              <div className="field">
-                <label>Приоритет</label>
-                <select className="select" value={draft.priority} disabled={readOnly} onChange={(e) => change({ priority: Number(e.target.value) })}>
-                  <option value={1}>P1 — критично</option><option value={2}>P2 — высокий</option><option value={3}>P3 — обычный</option>
-                  <option value={4}>P4 — низкий</option><option value={5}>P5 — когда-нибудь</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>Дедлайн</label>
-                <input className="input" type="date" value={toDateInput(draft.deadline)} disabled={readOnly} onChange={(e) => change({ deadline: e.target.value || null })} />
-              </div>
-              <div className="field">
-                <label>Следующая проверка</label>
-                <input className="input" type="datetime-local" value={toDateTimeInput(draft.next_check_at)} disabled={readOnly} onChange={(e) => change({ next_check_at: fromDateTimeInput(e.target.value) })} />
-              </div>
-            </div>
+            {!mobile && props}
 
             <DelegationsSection store={store} taskId={task.id} editable={editable} />
             {editable ? <RemindersSection store={store} taskId={task.id} /> : null}

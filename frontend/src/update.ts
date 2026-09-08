@@ -15,6 +15,8 @@ export function announceUpdate(apply: () => void) {
   if (document.visibilityState === "hidden" && !hasDirtyForms()) apply();
 }
 export function applyUpdate() { applyFn?.(); }
+/** Ждёт ли уже скачанная новая версия (для «потянуть-обновить»: тогда применяем её, а не просто перечитываем данные). */
+export function updatePending(): boolean { return available; }
 
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {

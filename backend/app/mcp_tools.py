@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import digest, models
+from . import digest, models, names
 from .config import settings
 from .crud import log
 from .scope import (OWNER, WRITE, direction_access, is_assignee, my_person_id, project_access, stamp, task_access, visible_directions,
@@ -231,7 +231,7 @@ _MISSING_HINT = {
     "Проект": "Проект должен уже существовать внутри направления. Посмотрите list_projects, создайте его create_project "
               "(или передайте create_project_if_missing=true в create_task) либо уберите поле project — задача лягет прямо в направление.",
     "Задача": "Найдите задачу через list_tasks (query=часть названия; include_done=true, если она могла быть закрыта) и повторите с её id.",
-    "Человек": "Человека нет в справочнике. Передайте create_person_if_missing=true или сначала вызовите create_person (имя, почта).",
+    "Человек": "Человека нет в справочнике (кириллица и латиница уже сверены). Если в списке «Доступные» есть тот, кого имели в виду — повторите с его именем или id; иначе передайте create_person_if_missing=true или сначала вызовите create_person (имя, почта).",
 }
 
 
@@ -254,8 +254,9 @@ def _prefer_open(cands: list, write: bool, s: str):
     return None
 
 
-def _match(items, ref, label: str, name_attr: str = "name", write: bool = False):
-    """Найти одну сущность по id или названию (регистр, ё/е и пунктуация не важны; допускается часть названия и словоформы)."""
+def _match(items, ref, label: str, name_attr: str = "name", write: bool = False, fuzzy=None):
+    """Найти одну сущность по id или названию (регистр, ё/е и пунктуация не важны; допускается часть названия и словоформы).
+    fuzzy(items, s) — запасной поиск, когда по буквам ничего не нашлось (люди: кириллица ↔ латиница, фамилия из почты)."""
     if ref is None or str(ref).strip() == "":
         raise ToolError(f"{label}: не указано")
     s = str(ref).strip()
@@ -285,6 +286,11 @@ def _match(items, ref, label: str, name_attr: str = "name", write: bool = False)
                 nws = n.split()
                 return bool(words) and all((w in n) if len(w) < 4 else any(_stem_eq(w, nw) for nw in nws) for w in words)
             partial = [it for it, n in names if hit(n)]
+        if fuzzy is not None:
+            # люди: латинские и кириллические написания — один список кандидатов, иначе «Айдос» тихо возьмёт «Айдос Нуров»,
+            # не заметив «Aidos Bekov»
+            seen = {id(it) for it in partial}
+            partial = partial + [it for it in fuzzy(items, s) if id(it) not in seen]
         if is_task and partial:
             got = _prefer_open(partial, write, s)
             if got is not None:
@@ -337,8 +343,13 @@ def resolve_task(db, user, ref, write: bool = False) -> models.Task:
     return _match(visible_tasks(db, user), ref, "Задача", "title", write=write)
 
 
+def _people_phonetic(items, s: str) -> list:
+    """Люди: «Айдос» ↔ «Aidos Bekov», «Абильханов» ↔ «n.abilkhanov@cis.kz» (v1.2, см. names.py)."""
+    return [p for p in items if names.person_matches(s, p.name, getattr(p, "email", None))]
+
+
 def resolve_person(db, ref) -> models.Person:
-    return _match(all_people(db), ref, "Человек")
+    return _match(all_people(db), ref, "Человек", fuzzy=_people_phonetic)
 
 
 def resolve_project(db, user, ref, direction: models.Direction | None = None) -> models.Project:
@@ -692,6 +703,8 @@ def _similar_people(db, name: str) -> list[models.Person]:
             continue
         if n == q or n.startswith(q + " ") or q.startswith(n + " "):
             out.append(p)
+        elif names.person_matches(name, p.name, p.email) or names.person_matches(p.name, name):
+            out.append(p)   # v1.2: «Айдос Беков» ≈ «Aidos Bekov» — не создавать дубль латиницей/кириллицей
         elif len(qw) == 1 and any(_stem_eq(qw[0], w) for w in nw):
             out.append(p)
         elif len(nw) == 1 and any(_stem_eq(nw[0], w) for w in qw):
@@ -1019,7 +1032,7 @@ def _work_email(a: dict, key: str = "email", db=None) -> str | None:
 
 def t_create_person(db, user, a):
     name = _clean_name(a, "name", "человека")
-    dup = [p for p in all_people(db) if _norm(p.name) == _norm(name)]
+    dup = [p for p in all_people(db) if _norm(p.name) == _norm(name) or names.key(p.name) == names.key(name)]
     if dup:
         raise ToolError(f"«{dup[0].name}» уже есть в справочнике (id {dup[0].id})")
     email = _work_email(a, db=db)
@@ -1352,7 +1365,7 @@ def instructions_for(user: models.User) -> str:
         "ПРАВИЛО: слова «запиши», «добавь задачу», «поручи», «делегируй», «напомни», «поставь срок/дедлайн», «отметь выполненным», «возьми в работу», "
         "«что у меня», «сводка», «как дела у <человек>», «что по <направление>», «кто не справляется», «что сегодня» — это команды планнеру. "
         "Сразу вызывай инструменты, не спрашивай, куда записать и не предлагай другие места. Голосовые формулировки короткие и неточные: "
-        "названия направлений, задач и людей передавай как сказано — сервер ищет по части названия и сам вернёт кандидатов, если совпадений несколько; "
+        "названия направлений, задач и людей передавай как сказано — сервер ищет по части названия и сам вернёт кандидатов, если совпадений несколько; имена людей можно называть кириллицей или латиницей в любом написании (Айдос = Aidos = Aydos), сервер сопоставит сам — не транслитерируй и не переспрашивай; "
         "только тогда уточняй у человека. Если направление не названо — создай задачу без направления, не переспрашивай.\n"
         "Даты: «завтра», «в пятницу», «через неделю», «к концу месяца» переводи в ISO сам от текущей даты; время без указания — 09:00; "
         "«напомни в 10» — сегодня в 10:00, если ещё не прошло, иначе завтра.\n"

@@ -7,6 +7,7 @@ export type Store = {
   shared: SharedWithMe[]; trash: TrashOut | null;
   loading: boolean; error: string | null;
   reload: () => Promise<void>;
+  refresh: () => Promise<void>;   // то же, что reload, но без экрана «загрузка…» — данные меняются на месте
   reloadTasks: () => Promise<void>;
   reloadDirections: () => Promise<void>;
   reloadProjects: () => Promise<void>;
@@ -51,11 +52,14 @@ export function useStore(): Store {
   // Корзина — вспомогательный раздел: если бэкенд её ещё не отдаёт, молчим, а не красим плашку
   const reloadTrash = useCallback(async () => { try { setTrash(await api<TrashOut>("/trash")); } catch { setTrash(null); } }, []);
 
+  const refresh = useCallback(async () => {
+    await Promise.all([reloadMe(), reloadDirections(), reloadProjects(), reloadTasks(), reloadPeople(), reloadTools(), reloadMindmaps(), reloadShared(), reloadTrash()]);
+  }, [reloadMe, reloadDirections, reloadProjects, reloadTasks, reloadPeople, reloadTools, reloadMindmaps, reloadShared, reloadTrash]);
   const reload = useCallback(async () => {
     setLoading(true);
-    await Promise.all([reloadMe(), reloadDirections(), reloadProjects(), reloadTasks(), reloadPeople(), reloadTools(), reloadMindmaps(), reloadShared(), reloadTrash()]);
+    await refresh();
     setLoading(false);
-  }, [reloadMe, reloadDirections, reloadProjects, reloadTasks, reloadPeople, reloadTools, reloadMindmaps, reloadShared, reloadTrash]);
+  }, [refresh]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -69,5 +73,5 @@ export function useStore(): Store {
   const inbox = allTasks.filter((t) => me && t.owner && t.owner.id !== me.id && (t.assigned_to_me || t.access === "assignee"));
   const patchMindmap = useCallback((m: MindMap) => setMindmaps((prev) => prev.map((x) => (x.id === m.id ? m : x))), []);
 
-  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, trash, loading, error, reload, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchMindmap, setError };
+  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, trash, loading, error, reload, refresh, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchMindmap, setError };
 }

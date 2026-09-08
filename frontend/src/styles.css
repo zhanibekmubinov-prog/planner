@@ -945,6 +945,26 @@ button.arch-name:hover { color: var(--accent); cursor: pointer; }
   .tab.all, .tab.check { display: none; }              /* на телефоне доска — один статус за раз */
   .update-bar, .error-bar { padding-left: 14px; padding-right: 14px; }
 
+  /* ---- «Потянуть сверху вниз — обновить» (v1.1): кольцо цвета акцента выезжает из-под верхнего края ---- */
+  .shell.mobile .main { overscroll-behavior-y: contain; }   /* iOS не тянет за собой весь экран */
+  .ptr { position: fixed; left: 0; right: 0; top: 0; z-index: 11; display: flex; justify-content: center; pointer-events: none;
+    transform: translateY(calc(var(--ptr-y, 0px) - 44px)); transition: transform 0.12s ease-out; }
+  .ptr-pulling, .ptr-armed { transition: none; }                 /* пока палец на экране — 1:1, без запаздывания */
+  .ptr-disc { width: 36px; height: 36px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line-strong);
+    box-shadow: 0 4px 14px rgba(60, 45, 20, 0.16); display: flex; align-items: center; justify-content: center;
+    transform: scale(calc(0.7 + 0.3 * var(--ptr-p, 0))); opacity: calc(0.4 + 0.6 * var(--ptr-p, 0)); }
+  .ptr-refreshing .ptr-disc, .ptr-done .ptr-disc { transform: none; opacity: 1; }
+  .ptr-ring { transform: rotate(-90deg); }
+  .ptr-track { fill: none; stroke: var(--line); stroke-width: 2; }
+  .ptr-arc { fill: none; stroke: var(--accent); stroke-width: 2.25; stroke-linecap: round; }
+  .ptr-armed .ptr-arc { stroke-width: 2.75; }
+  .ptr-refreshing .ptr-ring { animation: ptr-spin 0.8s linear infinite; }
+  .ptr-check { fill: none; stroke: var(--accent); stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; transform: rotate(90deg); transform-origin: 12px 12px; }
+  .ptr-done .ptr-arc { stroke: var(--ok, var(--accent)); }
+  .ptr-done .ptr-check { stroke: var(--ok, var(--accent)); }
+  @keyframes ptr-spin { to { transform: rotate(270deg); } }
+  @media (prefers-reduced-motion: reduce) { .ptr { transition: none; } .ptr-refreshing .ptr-ring { animation-duration: 1.6s; } }
+
   /* ---- Доска: одна колонка на всю ширину ---- */
   .shell.mobile .board { display: flex; flex-direction: column; gap: 18px; padding: 10px 12px 24px; overflow: visible; flex: none; }
   .shell.mobile .col { max-height: none; min-height: 0; }

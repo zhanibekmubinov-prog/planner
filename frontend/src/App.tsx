@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LoginScreen, pickUpSession, ProfileModal } from "./Account";
 import InboxPage from "./Inbox";
 import { errorText, onUnauthorized, put } from "./api";
@@ -23,7 +23,9 @@ import TaskPanel from "./TaskPanel";
 import { useToast } from "./toast";
 import TrashPage from "./Trash";
 import GuestsPage from "./Guests";
-import { applyUpdate, useUpdateAvailable } from "./update";
+import { applyUpdate, updatePending, useUpdateAvailable } from "./update";
+import { PullIndicator, usePullToRefresh } from "./PullToRefresh";
+import { hasDirtyForms } from "./layers";
 import "./styles.css";
 
 export default function App() {
@@ -48,6 +50,12 @@ function Workspace() {
   const toast = useToast();
   const updateReady = useUpdateAvailable();
   const mobile = useIsMobile();
+  // Телефон: «потянуть сверху вниз» перечитывает данные на месте; если уже скачана новая версия сайта — применяет её (В3: не поверх несохранённого ввода)
+  const mainRef = useRef<HTMLElement>(null);
+  const pull = usePullToRefresh(mainRef, async () => {
+    if (updatePending() && !hasDirtyForms()) { applyUpdate(); return; }
+    await store.refresh();
+  }, mobile);
   const openMenu = (d: Direction, e: React.MouseEvent) => setMenu(anchorFromEvent(d, e));
   const openTaskAnywhere = (id: number) => { setView({ kind: "board", directionId: null }); setSelectedId(id); };
   // В4: вернуть проект из архива прямо с карты проектов
@@ -118,7 +126,8 @@ function Workspace() {
       {/* Телефон: нижняя панель вкладок вместо левой панели (v0.11) */}
       {mobile ? <MobileNav {...navProps} /> : <Sidebar {...navProps} />}
 
-      <main className="main">
+      <main className="main" ref={mainRef}>
+        {mobile && <PullIndicator state={pull} />}
         {updateReady && (
           <div className="update-bar" role="status">
             <span>Доступна новая версия Planner.</span>

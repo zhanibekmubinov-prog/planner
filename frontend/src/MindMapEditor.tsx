@@ -16,6 +16,15 @@ import { useToast } from "./toast";
 
 type Props = { store: Store; map: MindMap; onBack: () => void; onDeleted: () => void; onOpenTask?: (taskId: number) => void };
 
+/** Масштаб и сдвиг, при которых вся карта видна в области el с полями; k в пределах [0.3, maxK]. */
+function fitView(el: HTMLElement, laid: Laid[], maxK: number) {
+  if (!laid.length || !el.clientWidth || !el.clientHeight) return { x: el.clientWidth / 2, y: el.clientHeight / 2, k: 1 };
+  const minX = Math.min(...laid.map((l) => l.x - l.w / 2)), maxX = Math.max(...laid.map((l) => l.x + l.w / 2));
+  const minY = Math.min(...laid.map((l) => l.y - l.h / 2)), maxY = Math.max(...laid.map((l) => l.y + l.h / 2));
+  const k = Math.min(maxK, Math.max(0.3, Math.min((el.clientWidth - 80) / (maxX - minX || 1), (el.clientHeight - 80) / (maxY - minY || 1))));
+  return { k, x: el.clientWidth / 2 - ((minX + maxX) / 2) * k, y: el.clientHeight / 2 - ((minY + maxY) / 2) * k };
+}
+
 /* ---------- компонент ---------- */
 export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTask }: Props) {
   const [tree, setTree] = useState<MindNode>(map.data?.id ? map.data : { id: "root", text: map.title, children: [] });
@@ -49,11 +58,15 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   const direction = map.direction_id ? store.directions.find((d) => d.id === map.direction_id) : undefined;
   const task = map.task_id ? store.tasks.find((t) => t.id === map.task_id) : undefined;
 
-  // центрировать при открытии
+  // v1.4.1: при открытии карта вписывается в область целиком (раньше — центр при 100%, и большая карта уезжала за края).
+  // Мелкую карту не увеличиваем больше 100%; кнопка «Вписать» может и до 200%.
+  const fittedFor = useRef<number | null>(null);
   useEffect(() => {
+    if (fittedFor.current === map.id) return;
     const el = areaRef.current; if (!el) return;
-    setView({ x: el.clientWidth / 2, y: el.clientHeight / 2, k: 1 });
-  }, [map.id]);
+    fittedFor.current = map.id;
+    setView(fitView(el, laid, 1));
+  }, [map.id, laid]);
 
   const flush = useCallback(async () => {
     if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
@@ -220,10 +233,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   }
   function fit() {
     const el = areaRef.current; if (!el || !laid.length) return;
-    const minX = Math.min(...laid.map((l) => l.x - l.w / 2)), maxX = Math.max(...laid.map((l) => l.x + l.w / 2));
-    const minY = Math.min(...laid.map((l) => l.y - l.h / 2)), maxY = Math.max(...laid.map((l) => l.y + l.h / 2));
-    const k = Math.min(2, Math.max(0.3, Math.min((el.clientWidth - 80) / (maxX - minX || 1), (el.clientHeight - 80) / (maxY - minY || 1))));
-    setView({ k, x: el.clientWidth / 2 - ((minX + maxX) / 2) * k, y: el.clientHeight / 2 - ((minY + maxY) / 2) * k });
+    setView(fitView(el, laid, 2));
   }
 
   async function relink(directionId: number | null) {

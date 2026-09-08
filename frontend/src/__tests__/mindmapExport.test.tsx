@@ -100,3 +100,31 @@ describe("Кнопка «Экспорт…» в редакторе", () => {
     expect(downloads).toHaveLength(0);
   });
 });
+
+describe("Открытие карты (v1.4.1)", () => {
+  // jsdom не считает размеры — подставляем область 800×500 и смотрим, какой масштаб выбрал редактор
+  const size = (w: number, h: number) => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get() { return (this as HTMLElement).classList?.contains("mm-area") ? w : 0; } });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { return (this as HTMLElement).classList?.contains("mm-area") ? h : 0; } });
+  };
+  afterEach(() => { delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth; delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight; });
+  const scaleOf = () => Number(/scale\(([\d.]+)\)/.exec((document.querySelector(".mm-layer") as HTMLElement).style.transform)?.[1]);
+
+  it("большая карта при открытии уменьшается, чтобы влезть целиком", () => {
+    size(800, 500);
+    const big: MindNode = { id: "root", text: "ПТО ГРП", children: Array.from({ length: 14 }, (_, i) => ({
+      id: `n${i}`, text: `Может заменять мастера в его отсутствие и вести журнал ${i}`,
+      children: [{ id: `n${i}a`, text: "Проверка оборудования перед выездом на куст", children: [] }],
+    })) };
+    render(<MindMapEditor store={makeStore()} map={{ ...map, data: big }} onBack={() => {}} onDeleted={() => {}} />);
+    const k = scaleOf();
+    expect(k).toBeLessThan(0.8); expect(k).toBeGreaterThanOrEqual(0.3);
+    expect(screen.getByText(/%$/).textContent).toBe(`${Math.round(k * 100)}%`);
+  });
+
+  it("маленькая карта не увеличивается больше 100%", () => {
+    size(1600, 900);
+    render(<MindMapEditor store={makeStore()} map={map} onBack={() => {}} onDeleted={() => {}} />);
+    expect(scaleOf()).toBe(1);
+  });
+});

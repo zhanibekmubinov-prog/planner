@@ -231,6 +231,7 @@ _MISSING_HINT = {
     "Проект": "Проект должен уже существовать внутри направления. Посмотрите list_projects, создайте его create_project "
               "(или передайте create_project_if_missing=true в create_task) либо уберите поле project — задача лягет прямо в направление.",
     "Задача": "Найдите задачу через list_tasks (query=часть названия; include_done=true, если она могла быть закрыта) и повторите с её id.",
+    "Майндмап": "Посмотрите list_mindmaps (можно с фильтром direction или task) и повторите с id или точным названием карты.",
     "Человек": "Человека нет в справочнике (кириллица и латиница уже сверены). Если в списке «Доступные» есть тот, кого имели в виду — повторите с его именем или id; иначе передайте create_person_if_missing=true или сначала вызовите create_person (имя, почта).",
 }
 
@@ -542,6 +543,105 @@ def t_list_tasks(db, user, a):
 
 def t_get_task(db, user, a):
     return task_full(resolve_task(db, user, a.get("task")))
+
+
+# ── Майндмапы (v1.4, только чтение) ───────────────────────────────────────────
+
+PRIORITY_MARK = ["", "!", "!!", "!!!"]
+
+
+def my_mindmaps(db: Session, user: models.User) -> list[models.MindMap]:
+    """Майндмапы — только свои (как в REST: у карт нет совместного доступа)."""
+    return db.scalars(select(models.MindMap).where(models.MindMap.owner_id == user.id).order_by(models.MindMap.updated_at.desc())).all()
+
+
+def resolve_mindmap(db, user, ref) -> models.MindMap:
+    return _match(my_mindmaps(db, user), ref, "Майндмап", "title")
+
+
+def _mm_root(m: models.MindMap) -> dict:
+    d = m.data if isinstance(m.data, dict) and m.data.get("id") else {}
+    return {"id": d.get("id", "root"), "text": d.get("text") or m.title, "children": d.get("children") or [], "links": d.get("links") or []}
+
+
+def _mm_count(n: dict) -> int:
+    return 1 + sum(_mm_count(c) for c in (n.get("children") or []))
+
+
+def _mm_find(n: dict, id_: str) -> dict | None:
+    if n.get("id") == id_:
+        return n
+    for c in n.get("children") or []:
+        r = _mm_find(c, id_)
+        if r:
+            return r
+    return None
+
+
+def mindmap_outline(m: models.MindMap) -> str:
+    """Дерево текстом — тот же формат, что экспорт «структура» во фронте: «- Узел (!!) [линия: подпись]»,
+    ниже связи «A → B: подпись». Свёрнутые ветки раскрываются — Claude должен видеть всё."""
+    root = _mm_root(m)
+    out: list[str] = []
+    used_prio = used_note = False
+
+    def walk(n: dict, depth: int):
+        nonlocal used_prio, used_note
+        line = f"{'  ' * depth}- {(n.get('text') or '…').strip()}"
+        p = n.get("priority") or 0
+        if isinstance(p, int) and 0 < p <= 3:
+            line += f" ({PRIORITY_MARK[p]})"; used_prio = True
+        if n.get("note") and depth > 0:
+            line += f" [линия: {str(n['note']).strip()}]"; used_note = True
+        out.append(line)
+        for c in n.get("children") or []:
+            walk(c, depth + 1)
+
+    for c in root["children"]:
+        walk(c, 0)
+    if not root["children"]:
+        out.append("(карта пока пустая)")
+    links = [(l, _mm_find(root, l.get("from")), _mm_find(root, l.get("to"))) for l in root["links"] if isinstance(l, dict)]
+    links = [(l, a, b) for l, a, b in links if a and b]
+    if links:
+        out += ["", "Связи между узлами:"]
+        for l, a, b in links:
+            out.append(f"- {(a.get('text') or '…').strip()} → {(b.get('text') or '…').strip()}" + (f": {str(l['note']).strip()}" if l.get("note") else ""))
+    legend = []
+    if used_prio: legend.append("(!) (!!) (!!!) — важность узла")
+    if used_note: legend.append("[линия: …] — подпись на линии от родительского узла")
+    if links: legend.append("→ — связь-стрелка между узлами")
+    if legend:
+        out += ["", "; ".join(legend) + "."]
+    return "\n".join(out)
+
+
+def mindmap_brief(m: models.MindMap) -> dict:
+    root = _mm_root(m)
+    return {"id": m.id, "title": m.title, "central_topic": root["text"], "nodes": _mm_count(root) - 1, "links": len(root["links"]),
+            "direction": m.direction.name if _is_alive(m.direction) else None, "direction_id": m.direction_id if _is_alive(m.direction) else None,
+            "task": m.task.title if _is_alive(m.task) else None, "task_id": m.task_id if _is_alive(m.task) else None,
+            "updated_at": _local(m.updated_at)}
+
+
+def t_list_mindmaps(db, user, a):
+    maps = my_mindmaps(db, user)
+    if a.get("direction"):
+        d = resolve_direction(db, user, a["direction"])
+        maps = [m for m in maps if m.direction_id == d.id]
+    if a.get("task"):
+        t = resolve_task(db, user, a["task"])
+        maps = [m for m in maps if m.task_id == t.id]
+    return {"mindmaps": [mindmap_brief(m) for m in maps]}
+
+
+def t_get_mindmap(db, user, a):
+    m = resolve_mindmap(db, user, a.get("mindmap"))
+    out = mindmap_brief(m)
+    out["outline"] = mindmap_outline(m)
+    if a.get("include_tree"):
+        out["tree"] = m.data
+    return out
 
 
 def t_list_people(db, user, a):
@@ -1344,6 +1444,15 @@ TOOLS: list[dict] = [
     {"name": "get_task", "handler": t_get_task,
      "description": "Карточка задачи целиком: описание, направления, поручения с отчётами исполнителей, напоминания, тулы.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}")}, "required": ["task"]}},
+    {"name": "list_mindmaps", "handler": t_list_mindmaps,
+     "description": "Мои майндмапы (карты мыслей): название, центральная тема, число узлов и связей, направление/задача. Можно отфильтровать по направлению или задаче. "
+                    "Для «какие у меня майндмапы», «есть ли карта по <направление>».",
+     "inputSchema": {"type": "object", "properties": {"direction": _s(f"направление: {REF}"), "task": _s(f"задача: {REF}")}}},
+    {"name": "get_mindmap", "handler": t_get_mindmap,
+     "description": "Майндмап целиком как текст-структуру (outline): узлы с отступами, важность (!) (!!) (!!!), подписи линий, связи-стрелки между узлами. "
+                    "Для «покажи майндмап …», «сделай документ/план/презентацию по майндмапу …», «что в карте …». Пересказывать структуру не надо — работай с ней как с планом документа.",
+     "inputSchema": {"type": "object", "properties": {"mindmap": _s(f"майндмап: {REF}"), "include_tree": _b("вернуть ещё и исходный JSON дерева (обычно не нужно)")},
+                     "required": ["mindmap"]}},
     {"name": "list_people", "handler": t_list_people,
      "description": "Справочник людей (кому можно поручать) с числом открытых/закрытых поручений от меня.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -1532,7 +1641,9 @@ def instructions_for(user: models.User) -> str:
         "после «да» создать проект и вызывать create_tasks_bulk; при обрыве повторить тот же вызов — дубли по названию пропускаются. "
         "Метки, комментарии и ссылку на карточку — в description; чеклист — с галочками как в исходнике. "
         "Проекты: задача может лежать в проекте внутри направления («в Эмбе проект Договор основной») или прямо в направлении. "
-        "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие»."
+        "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие». "
+        "МАЙНДМАПЫ: «покажи майндмап …», «сделай документ / план / презентацию по майндмапу …» — get_mindmap (список — list_mindmaps); "
+        "в ответе outline — структура карты текстом, работай с ней как с планом документа. Править карты через Claude пока нельзя."
     )
 
 

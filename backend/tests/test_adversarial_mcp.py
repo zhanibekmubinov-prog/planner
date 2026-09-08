@@ -287,11 +287,16 @@ def test_S4_comma_joined_directions_split(client, jack):
 
 
 def test_S4_comma_joined_checklist_items_split(client, jack):
-    """С4. add_checklist_items(items='a, b, c') → один пункт «a, b, c». Ожидается 3 пункта."""
+    """С4 (пересмотрено в v1.4.2). Раньше ожидалось, что строку «a, b, c» режем на 3 пункта. Решение владельца после задачи 93
+    (7 пунктов → 27 обрывков вида «опыт 0» / «5–1 год»): запятая внутри пункта — обычный символ; несколько пунктов — массив
+    или строка по переводам строки."""
     must_ok(client, jack, "create_task", title="Чеклист")
-    d, err = call(client, jack, "add_checklist_items", task="Чеклист", items="Собрать КП, Согласовать, Подписать")
+    must_ok(client, jack, "add_checklist_items", task="Чеклист", items="Собрать КП, согласовать, подписать")
     cl = must_ok(client, jack, "get_task", task="Чеклист")["checklist"]
-    assert len(cl) == 3, f"строка через запятую стала одним пунктом: {[c['text'] for c in cl]}"
+    assert [c["text"] for c in cl] == ["Собрать КП, согласовать, подписать"]
+    must_ok(client, jack, "add_checklist_items", task="Чеклист", items="Оператор — опыт 0,5–1 год\nМастер")
+    cl = must_ok(client, jack, "get_task", task="Чеклист")["checklist"]
+    assert [c["text"] for c in cl] == ["Собрать КП, согласовать, подписать", "Оператор — опыт 0,5–1 год", "Мастер"]
 
 
 @pytest.mark.parametrize("args", [{"limit": "все"}, {"due_within_days": "неделя"}, {"limit": -1}], ids=["limit=все", "due_within_days=неделя", "limit=-1"])

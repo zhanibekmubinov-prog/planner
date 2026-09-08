@@ -76,6 +76,28 @@ def _list(a: dict, key: str) -> list:
     return [v]
 
 
+def _lines(a: dict, key: str) -> list[str]:
+    """Список текстов, где запятая — обычный символ (пункты чеклиста: «Оператор 2 — опыт 0,5–1 год» — один пункт).
+    Массив → элементы как есть; строка → по переводам строки. v1.4.2: раньше здесь был _list, и пункт резался по запятым."""
+    v = a.get(key)
+    if v in (None, ""):
+        return []
+    if isinstance(v, str):
+        v = v.split("\n")
+    if isinstance(v, dict):
+        raise ToolError(f"{key}: ожидается список строк, получен объект")
+    if not isinstance(v, (list, tuple)):
+        v = [v]
+    out = []
+    for x in v:
+        if isinstance(x, dict):
+            x = x.get("text") or x.get("name") or ""
+        t = str(x).strip() if x not in (None, "") else ""
+        if t:
+            out.append(t)
+    return out
+
+
 def _str(a: dict, key: str, max_len: int = LEN_TEXT, required: bool = False) -> str | None:
     """Строковый аргумент: None → None; список/объект → ToolError; число → строка; обрезка пробелов, лимит длины."""
     v = a.get(key)
@@ -923,7 +945,7 @@ BULK_MAX = 50
 
 def _bulk_checklist(raw, where: str) -> list[dict]:
     """Чеклист одной задачи в пачке: массив строк или объектов {text, done}; строка — пункты по строкам.
-    Запятые внутри пункта НЕ разбивают его (в отличие от add_checklist_items) — при импорте важна точность."""
+    Запятые внутри пункта НЕ разбивают его (с v1.4.2 так же ведёт себя и add_checklist_items)."""
     if raw in (None, ""):
         return []
     if isinstance(raw, str):
@@ -1100,9 +1122,9 @@ def t_add_task_note(db, user, a):
 
 def t_add_checklist_items(db, user, a):
     t = _owned_task(db, user, a.get("task"))
-    items = [str(x).strip()[:LEN_TITLE] for x in _list(a, "items") if str(x).strip()]
+    items = [x[:LEN_TITLE] for x in _lines(a, "items")]
     if not items:
-        raise ToolError("items: список пунктов (строки)", hint="Передайте items массивом строк, например [\"Собрать КП\", \"Согласовать с юристом\"].")
+        raise ToolError("items: список пунктов (строки)", hint="Передайте items массивом строк, например [\"Собрать КП\", \"Согласовать с юристом, финансистом\"] — по одному пункту на элемент; запятые внутри пункта не разбивают его.")
     cl = list(t.checklist or [])
     have = {_norm(c.get("text", "")) for c in cl}
     added, skipped = [], []
@@ -1144,6 +1166,43 @@ def t_check_item(db, user, a):
     t.checklist = [{**c, "done": done} if c is hits[0] else dict(c) for c in cl]
     log(db, t, "update", {"via": "mcp", "fields": ["checklist"]}); db.commit(); db.refresh(t)
     return {"task": t.id, "title": t.title, "item": hits[0]["text"], "done": done, "progress": _checklist_done_count(t)}
+
+
+def _find_items(cl: list[dict], ref_raw: str) -> list[dict]:
+    """Пункты чеклиста по id, точному тексту или его части (как в check_item)."""
+    ref = _norm(ref_raw)
+    if not ref:
+        return []
+    return [c for c in cl if c.get("id") == ref_raw.strip().lower() or _norm(c.get("text", "")) == ref] or [c for c in cl if ref in _norm(c.get("text", ""))]
+
+
+def t_remove_checklist_items(db, user, a):
+    """v1.4.2: убрать пункты из чеклиста («убери пункт …», «очисти чеклист»). Это правка содержимого задачи, а не удаление
+    сущности — поэтому разрешено (владельцу и редактору). Пункты ищутся как в check_item; неоднозначность — ошибка, ничего не меняется."""
+    t = _owned_task(db, user, a.get("task"))
+    cl = list(t.checklist or [])
+    if not cl:
+        raise ToolError(f"У задачи «{t.title}» чеклист пуст.", hint="Убирать нечего.")
+    if a.get("all") in (True, "true", "1", 1):
+        removed = [c.get("text") for c in cl]
+        t.checklist = []
+    else:
+        refs = _lines(a, "items")
+        if not refs:
+            raise ToolError("items: какие пункты убрать (текст, часть текста или id) — либо all=true, чтобы очистить весь чеклист",
+                            hint="Список пунктов с id — в get_task (поле checklist).")
+        gone: list[dict] = []
+        for r in refs:
+            hits = [c for c in _find_items(cl, r) if not any(c is g for g in gone)]
+            if len(hits) != 1:
+                names = ", ".join(f"«{c.get('text')}»" for c in (hits or cl)[:10])
+                raise ToolError(f"Пункт «{r}»: {'несколько совпадений' if hits else 'не найден'} — {names}. Ничего не убрано.",
+                                hint="Уточните пункт: передайте более полный текст или id из get_task; чтобы снести все пункты — all=true.")
+            gone.append(hits[0])
+        removed = [c.get("text") for c in gone]
+        t.checklist = [dict(c) for c in cl if not any(c is g for g in gone)]   # новый список — иначе SQLAlchemy не запишет JSON
+    log(db, t, "update", {"via": "mcp", "fields": ["checklist"]}); db.commit(); db.refresh(t)
+    return {"task": t.id, "title": t.title, "removed": removed, "left": len(t.checklist or []), "progress": _checklist_done_count(t), "checklist": t.checklist}
 
 
 def t_delegate_task(db, user, a):
@@ -1553,8 +1612,13 @@ TOOLS: list[dict] = [
     {"name": "add_checklist_items", "handler": t_add_checklist_items,
      "description": "Добавить пункты в чеклист задачи («добавь в задачу пункты: …», «разбей на шаги»). Пункты — галочки внутри карточки задачи; "
                     "прогресс виден на карточке как 2/5. Для длинного свободного текста используй add_task_note.",
-     "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "items": _arr("пункты чеклиста, по одному на строку")},
+     "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "items": _arr("пункты чеклиста — по одному пункту на элемент массива; запятые внутри пункта не разбивают его (строкой — по одному на строку)")},
                      "required": ["task", "items"]}},
+    {"name": "remove_checklist_items", "handler": t_remove_checklist_items,
+     "description": "Убрать пункты из чеклиста задачи («убери пункт …», «очисти чеклист», исправить ошибочно добавленное). Пункт ищется по тексту, его части или id; "
+                    "all=true — очистить весь чеклист. Только владельцу и редактору задачи. При неоднозначности ничего не меняется.",
+     "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "items": _arr("пункты: текст, часть текста или id из get_task"), "all": _b("true — убрать все пункты")},
+                     "required": ["task"]}},
     {"name": "check_item", "handler": t_check_item,
      "description": "Отметить пункт чеклиста задачи выполненным (или снять отметку: done=false). Пункт ищется по тексту или его части. Доступно владельцу, редактору и исполнителю.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "item": _s("текст пункта (или часть) либо id"), "done": _b("true — выполнен (по умолчанию), false — снять")},
@@ -1634,8 +1698,9 @@ def instructions_for(user: models.User) -> str:
         "потом задача в проекте — в этом порядке.\n"
         "Выполненные задачи по названию для правок не берутся: если сервер ответил «уже выполнена, id N» — уточни у человека или повтори с id. "
         "Даты напоминаний и проверок в прошлом сервер отклоняет; дедлайн в прошлом принимается, но в ответе будет warning — озвучь его. "
-        "Списки (directions, assign_to, items) можно передавать строкой через запятую; названия направлений/людей с запятой не создаются.\n"
-        "Чеклист: «добавь пункты», «разбей на шаги» — add_checklist_items; «отметь пункт …» — check_item. "
+        "Списки (directions, assign_to) можно передавать строкой через запятую; названия направлений/людей с запятой не создаются.\n"
+        "Чеклист: «добавь пункты», «разбей на шаги» — add_checklist_items (items — массив, один пункт = один элемент; запятая внутри пункта — обычный символ, "
+        "не разбивай «опыт 0,5–1 год» на два); «отметь пункт …» — check_item; «убери пункт …», «очисти чеклист» — remove_checklist_items. "
         "МНОГО ЗАДАЧ СРАЗУ (переезд из Trello, список из Excel/письма): не создавай по одной — create_tasks_bulk пачками до 50 в один проект. "
         "Порядок: разобрать файл → показать человеку план (колонки → статусы backlog/in_progress/waiting/done, число карточек, что пропустить) → "
         "после «да» создать проект и вызывать create_tasks_bulk; при обрыве повторить тот же вызов — дубли по названию пропускаются. "

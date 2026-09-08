@@ -344,7 +344,7 @@ def resolve_task(db, user, ref, write: bool = False) -> models.Task:
 
 
 def _people_phonetic(items, s: str) -> list:
-    """Люди: «Айдос» ↔ «Aidos Bekov», «Абильханов» ↔ «n.abilkhanov@cis.kz» (v1.2, см. names.py)."""
+    """Люди: «Айдос» ↔ «Aidos Bekov», «Абильханов» ↔ «n.abilkhanov@cis.kz» (v1.1.1, см. names.py)."""
     return [p for p in items if names.person_matches(s, p.name, getattr(p, "email", None))]
 
 
@@ -704,7 +704,7 @@ def _similar_people(db, name: str) -> list[models.Person]:
         if n == q or n.startswith(q + " ") or q.startswith(n + " "):
             out.append(p)
         elif names.person_matches(name, p.name, p.email) or names.person_matches(p.name, name):
-            out.append(p)   # v1.2: «Айдос Беков» ≈ «Aidos Bekov» — не создавать дубль латиницей/кириллицей
+            out.append(p)   # v1.1.1: «Айдос Беков» ≈ «Aidos Bekov» — не создавать дубль латиницей/кириллицей
         elif len(qw) == 1 and any(_stem_eq(qw[0], w) for w in nw):
             out.append(p)
         elif len(nw) == 1 and any(_stem_eq(nw[0], w) for w in qw):

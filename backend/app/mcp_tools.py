@@ -739,10 +739,9 @@ def _check_owner_sees(db, user, t: models.Task, d: models.Direction):
                         hint="Добавляйте чужие задачи только в направления, открытые их владельцу.")
 
 
-def t_create_task(db, user, a):
-    title = _str(a, "title", LEN_TITLE)
-    if not title:
-        raise ToolError("title: укажите название задачи")
+def _resolve_containers(db, user, a) -> tuple[list[models.Direction], models.Project | None]:
+    """Направления и проект для новой задачи (общий код create_task и create_tasks_bulk): поиск по названию,
+    флаги create_*_if_missing, направление проекта добавляется само, всё должно быть редактируемым."""
     dirs = []
     for ref in _list(a, "directions"):
         try:
@@ -774,21 +773,42 @@ def t_create_task(db, user, a):
             dirs.append(project.direction)
     for d in dirs:
         _editable(d, f"Направление «{d.name}»")
-    # задача в чужом (открытом мне) направлении принадлежит его хозяину — доска остаётся его
-    owner_id = user.id if (not dirs or any(x.owner_id == user.id for x in dirs)) else (project.owner_id if project and project.owner_id else dirs[0].owner_id or user.id)
+    return dirs, project
+
+
+def _owner_for_new_task(user, dirs, project) -> int:
+    """Задача в чужом (открытом мне) направлении принадлежит его хозяину — доска остаётся его."""
+    if not dirs or any(x.owner_id == user.id for x in dirs):
+        return user.id
+    return project.owner_id if project and project.owner_id else dirs[0].owner_id or user.id
+
+
+def _new_task(db, user, a, dirs, project, owner_id, create_person: bool) -> tuple[models.Task, date | None]:
+    """Создать одну задачу из аргументов a (title, description, status, priority, deadline, next_check_at,
+    assign_to, check_at, comment). Без commit — вызывающий решает, когда фиксировать."""
+    title = _str(a, "title", LEN_TITLE)
+    if not title:
+        raise ToolError("title: укажите название задачи")
     deadline = parse_date(a.get("deadline"), "deadline")
     t = models.Task(title=title, description=_str(a, "description"), owner_id=owner_id,
                     status=parse_status(a["status"]) if a.get("status") else models.TaskStatus.backlog,
                     priority=parse_priority(a["priority"]) if a.get("priority") is not None else 3,
                     deadline=deadline, next_check_at=parse_future_dt(a.get("next_check_at"), "next_check_at"))
-    t.directions = dirs
+    t.directions = list(dirs)
     t.project = project
     db.add(t); db.flush(); log(db, t, "create", {"via": "mcp", "by": user.id})
     check_at = parse_future_dt(a.get("check_at"), "check_at")
     comment = _str(a, "comment")
     for ref in _list(a, "assign_to"):
-        p = _find_or_create_person(db, ref, bool(a.get("create_person_if_missing")))
+        p = _find_or_create_person(db, ref, create_person)
         _add_delegation(db, user, t, p, check_at, comment)
+    return t, deadline
+
+
+def t_create_task(db, user, a):
+    dirs, project = _resolve_containers(db, user, a)
+    owner_id = _owner_for_new_task(user, dirs, project)
+    t, deadline = _new_task(db, user, a, dirs, project, owner_id, bool(a.get("create_person_if_missing")))
     if a.get("remind_at"):
         _add_reminder(db, t, a["remind_at"], a.get("remind_channels"), _str(a, "remind_message"), a.get("remind_recipient"))
     db.commit(); db.refresh(t)
@@ -797,6 +817,108 @@ def t_create_task(db, user, a):
         out["warning"] = w
     return out
 
+
+BULK_MAX = 50
+
+
+def _bulk_checklist(raw, where: str) -> list[dict]:
+    """Чеклист одной задачи в пачке: массив строк или объектов {text, done}; строка — пункты по строкам.
+    Запятые внутри пункта НЕ разбивают его (в отличие от add_checklist_items) — при импорте важна точность."""
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        raw = [x for x in raw.split("\n") if x.strip()]
+    if not isinstance(raw, (list, tuple)):
+        raise ToolError(f"{where}: checklist — массив строк или объектов {{text, done}}")
+    out, seen = [], set()
+    for x in raw:
+        if isinstance(x, dict):
+            text, done = str(x.get("text") or x.get("name") or "").strip(), bool(x.get("done") or x.get("checked"))
+        elif isinstance(x, (list, tuple)):
+            raise ToolError(f"{where}: пункт чеклиста — строка или объект {{text, done}}")
+        else:
+            text, done = str(x).strip(), False
+        if not text or _norm(text) in seen:
+            continue
+        seen.add(_norm(text))
+        out.append({"id": secrets.token_hex(4), "text": text[:LEN_TITLE], "done": done})
+    return out
+
+
+def t_create_tasks_bulk(db, user, a):
+    """Пачка задач за один вызов (импорт из Trello/Excel, длинный список). Всё или ничего: любая ошибка в
+    tasks[i] откатывает весь вызов и называет номер и название задачи — Claude правит и повторяет.
+    Повтор после обрыва безопасен: задачи, чьё название уже есть в том же проекте (или в тех же направлениях
+    без проекта), пропускаются. dry_run=true — только проверить и показать план."""
+    items = a.get("tasks")
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except ValueError:
+            raise ToolError("tasks: ожидается массив объектов задач", hint='Передайте tasks как JSON-массив: [{"title": "…", "status": "…"}, …].')
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, (list, tuple)) or not items:
+        raise ToolError("tasks: непустой массив объектов задач", hint='Каждая задача — объект с title (обязательно), description, status, deadline, checklist, assign_to.')
+    if len(items) > BULK_MAX:
+        raise ToolError(f"tasks: не больше {BULK_MAX} задач за один вызов (получено {len(items)})",
+                        hint=f"Разбейте список на части по {BULK_MAX} и вызовите create_tasks_bulk несколько раз с теми же directions/project.")
+    dry_run = a.get("dry_run") is True or str(a.get("dry_run", "")).lower() in ("true", "1", "yes", "да")
+    skip_dupes = not (a.get("skip_duplicates") is False or str(a.get("skip_duplicates", "")).lower() in ("false", "0", "no", "нет"))
+    create_person = bool(a.get("create_person_if_missing"))
+    dirs, project = _resolve_containers(db, user, a)
+    owner_id = _owner_for_new_task(user, dirs, project)
+    # с чем сравнивать названия: тот же проект; без проекта — те же направления; без всего — мои задачи без направлений
+    existing = {}
+    if skip_dupes:
+        dir_ids = {d.id for d in dirs}
+        for t in visible_tasks(db, user):
+            same = (t.project_id == project.id) if project else (t.project_id is None and {d.id for d in _alive(t.directions)} == dir_ids)
+            if same:
+                existing.setdefault(_norm(t.title), t)
+    created, skipped, past = [], [], 0
+    for i, item in enumerate(items):
+        where = f"tasks[{i}]"
+        if not isinstance(item, dict):
+            raise ToolError(f"{where}: ожидается объект задачи, получено {type(item).__name__}", hint='Каждая задача — объект: {"title": "…"}.')
+        title = _str(item, "title", LEN_TITLE)
+        if not title:
+            raise ToolError(f"{where}: title — укажите название задачи")
+        where = f"{where} «{title}»"
+        if skip_dupes and _norm(title) in existing:
+            skipped.append({"title": title, "existing_id": existing[_norm(title)].id}); continue
+        try:
+            t, deadline = _new_task(db, user, item, dirs, project, owner_id, create_person)
+            cl = _bulk_checklist(item.get("checklist"), where)
+            if cl:
+                t.checklist = cl
+        except ToolError as e:
+            raise ToolError(f"{where}: {e}", hint=(e.hint or "") + " Ничего из этой пачки не записано — исправьте задачу и повторите весь вызов.") from e
+        if deadline and deadline < _today():
+            past += 1
+        created.append(t)
+        existing[_norm(title)] = t
+    if dry_run:
+        plan = [{"title": t.title, "status_ru": STATUS_RU[t.status.value], "deadline": t.deadline.isoformat() if t.deadline else None,
+                 "checklist": len(t.checklist or []), "assignees": [d.person.name for d in t.delegations]} for t in created]
+        db.rollback()
+        out = {"dry_run": True, "would_create": len(plan), "tasks": plan, "skipped": skipped,
+               "directions": [d.name for d in dirs], "project": project.name if project else None}
+    else:
+        db.commit()
+        for t in created:
+            db.refresh(t)
+        out = {"created": len(created), "tasks": [{"id": t.id, "title": t.title, "status_ru": STATUS_RU[t.status.value]} for t in created],
+               "skipped": skipped, "directions": [d.name for d in dirs], "project": project.name if project else None,
+               "link": f"{settings.frontend_url.rstrip('/')}/" if settings.frontend_url else None}
+    warnings = []
+    if past:
+        warnings.append(f"{past} задач(и) с дедлайном в прошлом — сразу считаются просроченными (при переносе старых досок это нормально).")
+    if skipped:
+        warnings.append(f"{len(skipped)} задач(и) пропущено: такие названия уже есть в этом проекте/направлении (skip_duplicates).")
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 def t_update_task(db, user, a):
     t = _owned_task(db, user, a.get("task"))
@@ -1277,6 +1399,31 @@ TOOLS: list[dict] = [
          "remind_at": _s("напоминание мне: ISO дата-время"), "remind_channels": _arr("telegram | email | outlook_calendar (по умолчанию telegram)"),
          "remind_message": _s("текст напоминания"), "remind_recipient": _s("owner | assignees | both")},
          "required": ["title"]}},
+    {"name": "create_tasks_bulk", "handler": t_create_tasks_bulk,
+     "description": "Создать МНОГО задач одним вызовом (до 50): импорт из Trello/Excel/списка, «заведи задачи по этому списку». Все задачи попадают "
+                    "в общие directions/project (как в create_task, с теми же флагами create_*_if_missing). Всё или ничего: ошибка в одной задаче "
+                    "откатывает весь вызов и называет её номер — исправь и повтори целиком. Повтор безопасен: задачи с названием, которое уже есть в этом "
+                    "проекте (или в этих направлениях без проекта), пропускаются (skip_duplicates, по умолчанию да) — так можно продолжить после обрыва. "
+                    "Перед записью большого списка вызови с dry_run=true и покажи человеку план (сколько, в какие статусы), потом создавай. "
+                    "Чеклист задачи передавай массивом строк или объектов {text, done} — запятые внутри пункта не разбивают его. "
+                    "Статусы: backlog | in_progress | waiting | done; колонки Trello сопоставляй с этими четырьмя и согласуй с человеком. "
+                    "Больше 50 — несколько вызовов по частям.",
+     "inputSchema": {"type": "object", "properties": {
+         "tasks": {"type": "array", "description": "задачи по порядку; каждая — объект", "items": {"type": "object", "properties": {
+             "title": _s("название задачи"), "description": _s("описание; сюда же метки, комментарии, ссылку на исходную карточку"),
+             "status": _s("backlog (по умолчанию) | in_progress | waiting | done"), "priority": _i("1–5, по умолчанию 3"),
+             "deadline": _s("YYYY-MM-DD"), "next_check_at": _s("ISO дата-время (только будущее)"),
+             "checklist": {"type": "array", "description": "пункты: строки или объекты {text, done}",
+                           "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}}}]}},
+             "assign_to": _arr("кому поручено — люди по имени/id"), "comment": _s("комментарий к поручению")},
+             "required": ["title"]}},
+         "directions": _arr("общие направления для всех задач пачки (по названию/id)"),
+         "project": _s("общий проект (по названию/id); его направление привяжется само"),
+         "create_direction_if_missing": _b("создать направление, если нет"), "create_project_if_missing": _b("создать проект, если нет (ровно одно направление)"),
+         "create_person_if_missing": _b("добавить в справочник людей из assign_to, если не найдены"),
+         "skip_duplicates": _b("пропускать задачи, чьё название уже есть в этом проекте/направлениях (по умолчанию true)"),
+         "dry_run": _b("только проверить и вернуть план, ничего не записывая")},
+         "required": ["tasks"]}},
     {"name": "update_task", "handler": t_update_task,
      "description": "Изменить задачу: название, описание, приоритет, дедлайн (null — убрать), дату проверки, статус, проект, добавить/убрать направления. Для своих задач и открытых на редактирование.",
      "inputSchema": {"type": "object", "properties": {"task": _s(f"задача: {REF}"), "title": _s("новое название"), "description": _s("новое описание (заменяет)"),
@@ -1380,6 +1527,10 @@ def instructions_for(user: models.User) -> str:
         "Даты напоминаний и проверок в прошлом сервер отклоняет; дедлайн в прошлом принимается, но в ответе будет warning — озвучь его. "
         "Списки (directions, assign_to, items) можно передавать строкой через запятую; названия направлений/людей с запятой не создаются.\n"
         "Чеклист: «добавь пункты», «разбей на шаги» — add_checklist_items; «отметь пункт …» — check_item. "
+        "МНОГО ЗАДАЧ СРАЗУ (переезд из Trello, список из Excel/письма): не создавай по одной — create_tasks_bulk пачками до 50 в один проект. "
+        "Порядок: разобрать файл → показать человеку план (колонки → статусы backlog/in_progress/waiting/done, число карточек, что пропустить) → "
+        "после «да» создать проект и вызывать create_tasks_bulk; при обрыве повторить тот же вызов — дубли по названию пропускаются. "
+        "Метки, комментарии и ссылку на карточку — в description; чеклист — с галочками как в исходнике. "
         "Проекты: задача может лежать в проекте внутри направления («в Эмбе проект Договор основной») или прямо в направлении. "
         "«Поделись», «дай доступ», «открой Нурлану» — share_access; коллеги видят открытое им в разделе «Общие»."
     )

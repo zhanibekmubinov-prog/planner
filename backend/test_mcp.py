@@ -9,6 +9,9 @@ from app.main import app
 Base.metadata.create_all(engine)
 c = TestClient(app, base_url="https://backend.test")
 R = "https://claude.ai/api/mcp/auth_callback"
+from datetime import date as _date, timedelta as _td
+def D(n): return (_date.today() + _td(days=n)).isoformat()
+
 
 def rpc(token, method, params=None, id_=1):
     r = c.post("/mcp", json={"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}, headers={"Authorization": f"Bearer {token}"})
@@ -67,11 +70,11 @@ d, err = call(access, "create_direction", name="Снабжение", goal="За�
 d, err = call(access, "create_direction", name="снабжение"); assert err and "уже есть" in d["error"]
 d, err = call(access, "create_direction", name="Бурение"); assert not err
 d, err = call(access, "create_person", name="Ержан Сапаров", email="e.saparov@cis.kz"); assert not err
-d, err = call(access, "create_task", title="Заказать фильтры на НС-3", directions=["снабж"], deadline="2026-09-10", priority=2,
-              assign_to=["Ержан"], check_at="2026-09-08T10:00", comment="уточнить количество", remind_at="2026-09-09", remind_channels=["telegram", "email"])
+d, err = call(access, "create_task", title="Заказать фильтры на НС-3", directions=["снабж"], deadline=D(2), priority=2,
+              assign_to=["Ержан"], check_at=D(1) + "T10:00", comment="уточнить количество", remind_at=D(1), remind_channels=["telegram", "email"])
 assert not err, d
-task = d["task"]; assert task["directions"] == ["Снабжение"] and task["assignees"] == ["Ержан Сапаров"] and task["reminders"][0]["fire_at"] == "2026-09-09 09:00", task
-assert task["delegations"][0]["check_at"] == "2026-09-08 10:00" and d["link"].endswith("?task=1")
+task = d["task"]; assert task["directions"] == ["Снабжение"] and task["assignees"] == ["Ержан Сапаров"] and task["reminders"][0]["fire_at"] == D(1) + " 09:00", task
+assert task["delegations"][0]["check_at"] == D(1) + " 10:00" and d["link"].endswith("?task=1")
 d, err = call(access, "create_task", title="Задача без направления", assign_to=["Айдос"]); assert err and "не найдено" in d["error"], d
 d, err = call(access, "create_task", title="Согласовать график ТО", assign_to=["Айдос Нурланов"], create_person_if_missing=True, directions=["Бурение"], deadline="2026-08-30")
 assert not err and d["task"]["overdue"] is True, d
@@ -83,15 +86,15 @@ d, err = call(access, "list_tasks", person="ержан"); assert d["count"] == 1
 d, err = call(access, "get_task", task="фильтры"); assert not err and d["delegations"][0]["comment"] == "уточнить количество", d
 d, err = call(access, "get_task", task="Заказать"); assert not err  # частичное совпадение одной задачи
 d, err = call(access, "add_task_note", task="фильтры", text="Поставщик обещал счёт в понедельник"); assert not err and "Поставщик" in d["description"]
-d, err = call(access, "delegate_task", task="Проверить остатки", people=["Ержан", "Айдос"], check_at="2026-09-12T09:00"); assert not err and len(d["delegations"]) == 2, d
-d, err = call(access, "update_task", task="Проверить остатки", status="в работе", deadline="2026-09-15", add_directions=["Снабжение"]); assert not err and d["task"]["status"] == "in_progress" and set(d["task"]["directions"]) == {"Логистика", "Снабжение"}, d
+d, err = call(access, "delegate_task", task="Проверить остатки", people=["Ержан", "Айдос"], check_at=D(4) + "T09:00"); assert not err and len(d["delegations"]) == 2, d
+d, err = call(access, "update_task", task="Проверить остатки", status="в работе", deadline=D(7), add_directions=["Снабжение"]); assert not err and d["task"]["status"] == "in_progress" and set(d["task"]["directions"]) == {"Логистика", "Снабжение"}, d
 d, err = call(access, "update_delegation", task="Проверить остатки", person="Айдос", status="done", report="Остатки сверены, расхождений нет"); assert not err and d["delegation"]["status"] == "done", d
 d, err = call(access, "update_delegation", task="Проверить остатки"); assert err and "Укажите person" in d["error"], d
 d, err = call(access, "set_task_status", task="Согласовать график", status="готово"); assert not err and d["to"] == "выполнено"
 d, err = call(access, "get_person_report", person="Айдос"); assert not err and d["tasks_total"] == 2 and d["done"] == 1 and d["done_late"] == 1 and d["completion_rate_pct"] == 50, d
 d, err = call(access, "get_team_report"); assert not err and len(d["people"]) == 2 and d["people"][0]["person"]["name"] in ("Ержан Сапаров", "Айдос Нурланов"), d
 d, err = call(access, "get_direction_summary", direction="Снабжение"); assert not err and d["tasks_total"] == 2 and "Ержан Сапаров" in d["people"], d
-d, err = call(access, "add_reminder", task="Проверить остатки", fire_at="2026-09-14T18:30", channels=["outlook_calendar"], recipient="both"); assert not err and d["reminder"]["fire_at"] == "2026-09-14 18:30"
+d, err = call(access, "add_reminder", task="Проверить остатки", fire_at=D(6) + "T18:30", channels=["outlook_calendar"], recipient="both"); assert not err and d["reminder"]["fire_at"] == D(6) + " 18:30"
 d, err = call(access, "add_reminder", task="Проверить остатки", fire_at="завтра"); assert err and "ISO" in d["error"]
 d, err = call(access, "update_direction", direction="Бурение", status="пауза"); assert not err and d["direction"]["status"] == "paused"
 d, err = call(access, "list_directions"); assert not err and len(d["directions"]) == 3 and any(x["attention_level_ru"] for x in d["directions"])
@@ -116,7 +119,7 @@ tok2 = _issue_tokens(db, cid, u2.id)["access_token"]; db.close()
 d, err = call(tok2, "list_tasks", scope="assigned_to_me"); assert not err and d["count"] == 2, d
 d, err = call(tok2, "update_task", task="фильтры", title="x"); assert err and "поручена вам" in d["error"], d
 d, err = call(tok2, "update_delegation", task="фильтры", status="done", report="Фильтры заказаны, счёт оплачен"); assert not err and d["delegation"]["report"], d
-d, err = call(tok2, "update_delegation", task="Проверить остатки", check_at="2026-09-20"); assert err and "только status и report" in d["error"], d
+d, err = call(tok2, "update_delegation", task="Проверить остатки", check_at=D(12)); assert err and "только status и report" in d["error"], d
 d, err = call(tok2, "set_task_status", task="фильтры", status="done"); assert not err
 d, err = call(tok2, "get_overview"); assert not err and d["directions"] == []
 d, err = call(access, "get_person_report", person="Ержан", include_done=True); assert not err and d["done"] == 1 and d["reports_recent"][0]["report"].startswith("Фильтры"), d

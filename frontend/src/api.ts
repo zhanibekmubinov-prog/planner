@@ -147,7 +147,16 @@ export type Recipient = "owner" | "assignees" | "both";
 export type Reminder = { id: number; task_id: number; fire_at: string; channels: Channel[]; message?: string | null; recipient?: Recipient; sent_at?: string | null };
 export type ReminderIn = Omit<Reminder, "id" | "sent_at">;
 
-export type MindNode = { id: string; text: string; children: MindNode[]; collapsed?: boolean };
+/** v1.2: связь между любыми двумя узлами (пунктирная стрелка с подписью); хранится в корне — `root.links`. */
+export type MindLink = { id: string; from: string; to: string; note?: string; color?: string };
+export type MindNode = {
+  id: string; text: string; children: MindNode[]; collapsed?: boolean;
+  color?: string;          // v1.2: цвет ветки (наследуется потомками; нет — цвет ветки первого уровня)
+  width?: -1 | 0 | 1;      // v1.2: линия к узлу и его ветке тоньше (-1) / автоматически (0) / толще (1)
+  note?: string;           // v1.2: подпись на линии от родителя
+  priority?: 0 | 1 | 2 | 3; // v1.2: важность — ! / !! / !!!
+  links?: MindLink[];      // только у корня
+};
 export type MindMap = {
   id: number; title: string; direction_id?: number | null; task_id?: number | null; data: MindNode;
   created_at: string; updated_at: string;

@@ -1,7 +1,9 @@
 // Редактор майндмапа в духе MindNode: центральная тема, автоматическая раскладка влево/вправо,
 // плавные ветви, цвет ветви первого уровня наследуется потомками. Автосохранение.
+// v1.2: панель выбранного узла (цвет ветки, толщина, важность, подпись линии), связи-стрелки между любыми узлами
+// (тянуть за ручку под узлом), толщина линий убывает с глубиной автоматически.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { del, DIRECTION_COLORS, dirColor, errorText, MIND_COLOR, MindMap, MindMapIn, MindNode, newNodeId, put } from "./api";
+import { del, DIRECTION_COLORS, dirColor, errorText, MIND_COLOR, MindLink, MindMap, MindMapIn, MindNode, newNodeId, put } from "./api";
 import { useConfirm } from "./confirm";
 import { layerCount, useDirtyFlag } from "./layers";
 import { Store } from "./store";
@@ -9,11 +11,24 @@ import { Store } from "./store";
 type Props = { store: Store; map: MindMap; onBack: () => void; onDeleted: () => void; onOpenTask?: (taskId: number) => void };
 
 /* ---------- геометрия ---------- */
-type Laid = { node: MindNode; depth: number; x: number; y: number; w: number; h: number; side: 1 | -1 | 0; color: string; parent?: Laid; lines: string[] };
+type Laid = {
+  node: MindNode; depth: number; x: number; y: number; w: number; h: number; side: 1 | -1 | 0;
+  color: string; adj: -1 | 0 | 1; parent?: Laid; lines: string[];
+};
 
 const FONT = { 0: 18, 1: 14.5, 2: 13.5 } as Record<number, number>;
 const fontFor = (d: number) => FONT[Math.min(d, 2)];
-const PAD_X = 14, PAD_Y = 8, GAP_X = 56, GAP_Y = 10, MAX_CHARS = 28;
+const PAD_X = 14, PAD_Y = 8, GAP_X = 56, GAP_Y = 10, MAX_CHARS = 28, NOTE_GAP = 48;
+/** Палитра веток: цвета направлений + фирменный цвет майндмапов + графит. */
+const PALETTE = [...DIRECTION_COLORS, MIND_COLOR, "#475569"];
+const LINK_COLOR = "#6b7280";
+const PRIORITY_MARK = ["", "!", "!!", "!!!"];
+
+/** Толщина линии по глубине: первые ветки толще, дальше тоньше; ручная поправка ×1.6 / ×0.55. */
+function strokeFor(depth: number, adj: -1 | 0 | 1): number {
+  const auto = depth <= 1 ? 3.6 : depth === 2 ? 2.5 : depth === 3 ? 1.9 : 1.5;
+  return +(auto * (adj === 1 ? 1.6 : adj === -1 ? 0.55 : 1)).toFixed(2);
+}
 
 function wrap(text: string, maxChars: number): string[] {
   const words = (text || " ").split(/\s+/); const lines: string[] = []; let cur = "";
@@ -37,11 +52,12 @@ function subtreeHeight(n: MindNode, depth: number): number {
   return Math.max(own, kids);
 }
 
-/** Раскладка: корень в (0,0); дети корня делятся на правую и левую стороны так, чтобы высоты были сбалансированы. */
+/** Раскладка: корень в (0,0); дети корня делятся на правую и левую стороны так, чтобы высоты были сбалансированы.
+ *  Цвет и поправка толщины наследуются вниз по ветке, пока узел не задал свои. */
 function layout(root: MindNode): Laid[] {
   const out: Laid[] = [];
   const m0 = measure(root.text, 0);
-  const rootL: Laid = { node: root, depth: 0, x: 0, y: 0, w: m0.w, h: m0.h, side: 0, color: MIND_COLOR, lines: m0.lines };
+  const rootL: Laid = { node: root, depth: 0, x: 0, y: 0, w: m0.w, h: m0.h, side: 0, color: MIND_COLOR, adj: root.width ?? 0, lines: m0.lines };
   out.push(rootL);
   if (root.collapsed) return out;
   const kids = root.children;
@@ -56,24 +72,33 @@ function layout(root: MindNode): Laid[] {
     let y = -sum / 2;
     indices.forEach((i, k) => {
       const child = kids[i];
-      const color = DIRECTION_COLORS[i % DIRECTION_COLORS.length];
-      placeSubtree(child, 1, rootL, side, y + hs[k] / 2, color);
+      const color = child.color ?? DIRECTION_COLORS[i % DIRECTION_COLORS.length];
+      placeSubtree(child, 1, rootL, side, y + hs[k] / 2, color, child.width ?? rootL.adj);
       y += hs[k] + GAP_Y;
     });
   }
-  function placeSubtree(n: MindNode, depth: number, parent: Laid, side: 1 | -1, cy: number, color: string) {
+  function placeSubtree(n: MindNode, depth: number, parent: Laid, side: 1 | -1, cy: number, color: string, adj: -1 | 0 | 1) {
     const m = measure(n.text, depth);
-    const x = parent.x + side * (parent.w / 2 + GAP_X + m.w / 2);
-    const laid: Laid = { node: n, depth, x, y: cy, w: m.w, h: m.h, side, color, parent, lines: m.lines };
+    const gap = GAP_X + (n.note ? NOTE_GAP : 0);   // подпись на линии — линия длиннее, чтобы подписи было где лечь
+    const x = parent.x + side * (parent.w / 2 + gap + m.w / 2);
+    const laid: Laid = { node: n, depth, x, y: cy, w: m.w, h: m.h, side, color, adj, parent, lines: m.lines };
     out.push(laid);
     if (n.collapsed || !n.children.length) return;
     const hs = n.children.map((c) => subtreeHeight(c, depth + 1));
     const sum = hs.reduce((a, b) => a + b, 0) + GAP_Y * (hs.length - 1);
     let y = cy - sum / 2;
-    n.children.forEach((c, k) => { placeSubtree(c, depth + 1, laid, side, y + hs[k] / 2, color); y += hs[k] + GAP_Y; });
+    n.children.forEach((c, k) => { placeSubtree(c, depth + 1, laid, side, y + hs[k] / 2, c.color ?? color, c.width ?? adj); y += hs[k] + GAP_Y; });
   }
   place(right, 1); place(left, -1);
   return out;
+}
+
+/** Точка на границе узла (прямоугольник со скруглением) в направлении к цели — отсюда начинается стрелка-связь. */
+function anchor(l: Laid, tx: number, ty: number) {
+  const dx = tx - l.x, dy = ty - l.y;
+  if (!dx && !dy) return { x: l.x, y: l.y };
+  const t = Math.min(l.w / 2 / (Math.abs(dx) || 1e-6), l.h / 2 / (Math.abs(dy) || 1e-6));
+  return { x: l.x + dx * t, y: l.y + dy * t };
 }
 
 /* ---------- операции над деревом (иммутабельно) ---------- */
@@ -90,13 +115,18 @@ function findNode(root: MindNode, id: string): MindNode | null {
   return null;
 }
 function countAll(n: MindNode): number { return n.children.reduce((s, c) => s + countAll(c), 1); }
+function idsOf(n: MindNode, acc: Set<string> = new Set()): Set<string> { acc.add(n.id); n.children.forEach((c) => idsOf(c, acc)); return acc; }
 
 /* ---------- компонент ---------- */
 export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTask }: Props) {
   const [tree, setTree] = useState<MindNode>(map.data?.id ? map.data : { id: "root", text: map.title, children: [] });
   const [title, setTitle] = useState(map.title);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selLink, setSelLink] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [noteEdit, setNoteEdit] = useState(false);             // открыта строка «подпись линии» в панели узла
+  const [linking, setLinking] = useState<{ from: string; px: number; py: number } | null>(null);
+  const [armed, setArmed] = useState<string | null>(null);     // «Связать» кнопкой: ждём клик по второму узлу
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
@@ -113,6 +143,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
 
   const laid = useMemo(() => layout(tree), [tree]);
   const byId = useMemo(() => new Map(laid.map((l) => [l.node.id, l])), [laid]);
+  const links = tree.links ?? [];
   const direction = map.direction_id ? store.directions.find((d) => d.id === map.direction_id) : undefined;
   const task = map.task_id ? store.tasks.find((t) => t.id === map.task_id) : undefined;
 
@@ -151,11 +182,17 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   useEffect(() => () => { if (dirtyRef.current) void flush(); }, [flush]);
   const back = () => { void flush(); onBack(); };
 
+  const selectNode = (id: string | null) => { setSelected(id); setSelLink(null); setNoteEdit(false); };
+  const selectLink = (id: string | null) => { setSelLink(id); setSelected(null); setEditing(null); setNoteEdit(false); };
+
   /* --- редактирование --- */
+  function patchNode(id: string, patch: Partial<MindNode>) {
+    commit(mapTree(tree, (n) => (n.id === id ? { ...n, ...patch } : n)));
+  }
   function addChild(parentId: string) {
     const id = newNodeId();
     commit(mapTree(tree, (n) => (n.id === parentId ? { ...n, collapsed: false, children: [...n.children, { id, text: "", children: [] }] } : n)));
-    setSelected(id); setEditing(id);
+    selectNode(id); setEditing(id);
   }
   function addSibling(id: string) {
     const parent = findParent(tree, id); if (!parent) { addChild(id); return; }
@@ -166,7 +203,14 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
       const kids = [...n.children]; kids.splice(i + 1, 0, { id: nid, text: "", children: [] });
       return { ...n, children: kids };
     }));
-    setSelected(nid); setEditing(nid);
+    selectNode(nid); setEditing(nid);
+  }
+  /** Убрать узел из дерева и все связи, которые в него (или в его ветку) вели. */
+  function withoutNode(root: MindNode, id: string): MindNode {
+    const gone = idsOf(findNode(root, id) ?? { id, text: "", children: [] });
+    const parent = findParent(root, id);
+    const next = mapTree(root, (x) => (x.id === parent?.id ? { ...x, children: x.children.filter((c) => c.id !== id) } : x));
+    return { ...next, links: (next.links ?? []).filter((l) => !gone.has(l.from) && !gone.has(l.to)) };
   }
   async function removeNode(id: string) {
     if (id === tree.id) return;
@@ -174,8 +218,8 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     const n = countAll(node) - 1;
     if (n > 0 && !(await confirm(`Узел «${node.text || "…"}» и ${n} вложенных исчезнут с карты.`, { title: "Удалить ветку?", danger: true, okLabel: "Удалить ветку" }))) return;
     const parent = findParent(tree, id);
-    commit(mapTree(tree, (x) => (x.id === parent?.id ? { ...x, children: x.children.filter((c) => c.id !== id) } : x)));
-    setSelected(parent?.id ?? null); setEditing(null);
+    commit(withoutNode(tree, id));
+    selectNode(parent?.id ?? null); setEditing(null);
   }
   function setText(id: string, text: string) {
     commit(mapTree(tree, (n) => (n.id === id ? { ...n, text } : n)), id === tree.id ? text : undefined);
@@ -189,16 +233,63 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     if (node && !node.text.trim() && id !== tree.id) {
       // пустой новый узел — убираем
       const parent = findParent(tree, id);
-      commit(mapTree(tree, (x) => (x.id === parent?.id ? { ...x, children: x.children.filter((c) => c.id !== id) } : x)));
-      setSelected(parent?.id ?? null);
+      commit(withoutNode(tree, id));
+      selectNode(parent?.id ?? null);
     }
+  }
+  function setPriority(id: string, p: 0 | 1 | 2 | 3) {
+    const cur = findNode(tree, id)?.priority ?? 0;
+    patchNode(id, { priority: cur === p ? 0 : p });   // повторное нажатие снимает
+  }
+
+  /* --- связи --- */
+  function addLink(from: string, to: string) {
+    if (from === to || !findNode(tree, from) || !findNode(tree, to)) return;
+    if (links.some((l) => (l.from === from && l.to === to) || (l.from === to && l.to === from))) return;   // уже связаны
+    const id = newNodeId();
+    commit({ ...tree, links: [...links, { id, from, to }] });
+    selectLink(id);
+  }
+  function patchLink(id: string, patch: Partial<MindLink>) {
+    commit({ ...tree, links: links.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
+  }
+  function removeLink(id: string) {
+    commit({ ...tree, links: links.filter((l) => l.id !== id) });
+    setSelLink(null);
+  }
+  const toLayer = (clientX: number, clientY: number) => {
+    const r = areaRef.current!.getBoundingClientRect();
+    return { px: (clientX - r.left - view.x) / view.k, py: (clientY - r.top - view.y) / view.k };
+  };
+  function startLinking(e: React.PointerEvent, from: string) {
+    e.stopPropagation(); e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setLinking({ from, ...toLayer(e.clientX, e.clientY) });
+  }
+  function moveLinking(e: React.PointerEvent) {
+    if (!linking) return;
+    setLinking({ ...linking, ...toLayer(e.clientX, e.clientY) });
+  }
+  function endLinking(e: React.PointerEvent) {
+    if (!linking) return;
+    const from = linking.from; setLinking(null);
+    const target = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>("[data-node]");
+    const to = target?.dataset.node;
+    if (to && to !== from) addLink(from, to);
   }
 
   // клавиатура
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (editing) return; // в режиме ввода — свои обработчики
+      if (editing || noteEdit) return; // в режиме ввода — свои обработчики
       if (layerCount() > 0) return;   // С4: открыт диалог/меню — клавиши ему, а не карте
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (selLink) {
+        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeLink(selLink); }
+        else if (e.key === "Escape") { setSelLink(null); }
+        return;
+      }
       if (!selected) { if (e.key === "Escape") back(); return; }
       if (e.key === "Tab") { e.preventDefault(); addChild(selected); }
       else if (e.key === "Enter") { e.preventDefault(); if (e.shiftKey || selected === tree.id) setEditing(selected); else addSibling(selected); }
@@ -207,7 +298,8 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
       // С4: Backspace на листе — не удаление, а правка текста (как в текстовом редакторе); ветку — только Delete
       else if (e.key === "Backspace") { e.preventDefault(); const n = findNode(tree, selected); if (n && n.children.length === 0 && selected !== tree.id) setEditing(selected); else void removeNode(selected); }
       else if (e.key === " ") { e.preventDefault(); toggleCollapse(selected); }
-      else if (e.key === "Escape") { setSelected(null); }
+      else if (e.key === "0" || e.key === "1" || e.key === "2" || e.key === "3") { e.preventDefault(); setPriority(selected, Number(e.key) as 0 | 1 | 2 | 3); }
+      else if (e.key === "Escape") { if (armed) setArmed(null); else selectNode(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -245,12 +337,42 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     try { await del(`/mindmaps/${map.id}`); await store.reloadMindmaps(); onDeleted(); } catch (e) { store.setError(errorText(e)); }
   }
 
-  const edgePath = (c: Laid) => {
+  /* --- геометрия линий --- */
+  const edgeEnds = (c: Laid) => {
     const p = c.parent!;
-    const x1 = p.x + c.side * p.w / 2, y1 = p.y, x2 = c.x - c.side * c.w / 2, y2 = c.y;
+    return { x1: p.x + c.side * p.w / 2, y1: p.y, x2: c.x - c.side * c.w / 2, y2: c.y };
+  };
+  const edgePath = (c: Laid) => {
+    const { x1, y1, x2, y2 } = edgeEnds(c);
     const dx = (x2 - x1) / 2;
     return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
   };
+  /** Связь: дуга от границы одного узла к границе другого с небольшим прогибом, чтобы не сливаться с ветками; стрелка на конце. */
+  function linkGeom(a: Laid, b: Laid) {
+    const p0 = anchor(a, b.x, b.y), p2 = anchor(b, a.x, a.y);
+    const mx = (p0.x + p2.x) / 2, my = (p0.y + p2.y) / 2;
+    const dx = p2.x - p0.x, dy = p2.y - p0.y, len = Math.hypot(dx, dy) || 1;
+    const bow = Math.min(60, len * 0.18);
+    const c = { x: mx - dy / len * bow, y: my + dx / len * bow };
+    const mid = { x: (p0.x + 2 * c.x + p2.x) / 4, y: (p0.y + 2 * c.y + p2.y) / 4 };
+    const tx = p2.x - c.x, ty = p2.y - c.y, tl = Math.hypot(tx, ty) || 1, ux = tx / tl, uy = ty / tl;
+    const s = 9;
+    const head = `M ${p2.x} ${p2.y} L ${p2.x - ux * s - uy * s * 0.5} ${p2.y - uy * s + ux * s * 0.5} L ${p2.x - ux * s + uy * s * 0.5} ${p2.y - uy * s - ux * s * 0.5} Z`;
+    return { d: `M ${p0.x} ${p0.y} Q ${c.x} ${c.y} ${p2.x} ${p2.y}`, head, mid };
+  }
+  const visibleLinks = links.map((l) => ({ l, a: byId.get(l.from), b: byId.get(l.to) })).filter((x): x is { l: MindLink; a: Laid; b: Laid } => !!x.a && !!x.b);
+
+  const toScreen = (x: number, y: number) => ({ left: view.x + x * view.k, top: view.y + y * view.k });
+  const selL = selected ? byId.get(selected) : undefined;
+  const selLk = selLink ? visibleLinks.find((x) => x.l.id === selLink) : undefined;
+
+  /* --- панель --- */
+  const swatches = (cur: string | undefined, onPick: (c: string | undefined) => void, autoTitle: string) => (
+    <div className="mm-sw" role="group" aria-label="Цвет">
+      <button className={`mm-swatch auto ${cur ? "" : "on"}`} title={autoTitle} onClick={() => onPick(undefined)} aria-label={autoTitle} />
+      {PALETTE.map((c) => <button key={c} className={`mm-swatch ${cur === c ? "on" : ""}`} style={{ background: c }} title={c} aria-label={`Цвет ${c}`} onClick={() => onPick(c)} />)}
+    </div>
+  );
 
   return (
     <div className="mm" style={{ ["--mind" as string]: MIND_COLOR }}>
@@ -278,25 +400,53 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
       </div>
 
       <div
-        ref={areaRef} className={`mm-area ${dragging ? "dragging" : ""}`}
+        ref={areaRef} className={`mm-area ${dragging ? "dragging" : ""} ${linking || armed ? "linking" : ""}`}
         onWheel={onWheel}
-        onMouseDown={(e) => { if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("mm-layer")) { setDragging({ sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }); setSelected(null); setEditing(null); } }}
+        onMouseDown={(e) => { if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("mm-layer")) { setDragging({ sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }); selectNode(null); setEditing(null); setArmed(null); } }}
         onMouseMove={(e) => { if (dragging) setView((v) => ({ ...v, x: dragging.ox + e.clientX - dragging.sx, y: dragging.oy + e.clientY - dragging.sy })); }}
         onMouseUp={() => setDragging(null)} onMouseLeave={() => setDragging(null)}
       >
         <div className="mm-layer" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
           <svg className="mm-edges" style={{ overflow: "visible" }}>
             {laid.filter((l) => l.parent).map((l) => (
-              <path key={l.node.id} d={edgePath(l)} stroke={l.color} strokeWidth={l.depth === 1 ? 3.5 : 2.2} fill="none" strokeLinecap="round" opacity={0.9} />
+              <path key={l.node.id} d={edgePath(l)} stroke={l.color} strokeWidth={strokeFor(l.depth, l.adj)} fill="none" strokeLinecap="round" opacity={0.9} />
             ))}
+            {visibleLinks.map(({ l, a, b }) => {
+              const g = linkGeom(a, b); const col = l.color ?? LINK_COLOR; const on = selLink === l.id;
+              return (
+                <g key={l.id} className={`mm-link ${on ? "sel" : ""}`}>
+                  <path d={g.d} stroke={col} strokeWidth={on ? 2.6 : 1.8} strokeDasharray="6 5" fill="none" strokeLinecap="round" />
+                  <path d={g.head} fill={col} />
+                  <path d={g.d} className="mm-link-hit" stroke="transparent" strokeWidth={16} fill="none"
+                        onClick={(e) => { e.stopPropagation(); selectLink(l.id); }} onMouseDown={(e) => e.stopPropagation()} />
+                </g>
+              );
+            })}
+            {linking && byId.get(linking.from) && (() => {
+              const a = byId.get(linking.from)!; const p0 = anchor(a, linking.px, linking.py);
+              return <path d={`M ${p0.x} ${p0.y} L ${linking.px} ${linking.py}`} stroke={LINK_COLOR} strokeWidth={1.8} strokeDasharray="6 5" fill="none" />;
+            })()}
           </svg>
+
+          {/* подписи на линиях веток */}
+          {laid.filter((l) => l.parent && l.node.note).map((l) => {
+            const { x1, y1, x2, y2 } = edgeEnds(l);
+            return (
+              <button key={"n" + l.node.id} className="mm-edge-note" style={{ left: (x1 + x2) / 2, top: (y1 + y2) / 2, ["--c" as string]: l.color }}
+                      title="Подпись линии — нажмите, чтобы изменить"
+                      onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); selectNode(l.node.id); setNoteEdit(true); }}>
+                {l.node.note}
+              </button>
+            );
+          })}
           {laid.map((l) => {
             const isSel = selected === l.node.id, isEdit = editing === l.node.id;
             const hidden = l.node.collapsed && l.node.children.length > 0;
+            const prio = l.node.priority ?? 0;
             return (
               <div
-                key={l.node.id}
-                className={`mm-node d${Math.min(l.depth, 2)} ${isSel ? "sel" : ""} ${hidden ? "collapsed" : ""} ${isEdit ? "editing" : ""}`}
+                key={l.node.id} data-node={l.node.id}
+                className={`mm-node d${Math.min(l.depth, 2)} ${isSel ? "sel" : ""} ${hidden ? "collapsed" : ""} ${isEdit ? "editing" : ""} ${armed && armed !== l.node.id ? "target" : ""}`}
                 style={(() => {
                   // В режиме ввода узел шире — растёт в сторону от родителя, чтобы не наезжать на него
                   const w = isEdit ? Math.max(l.w, 240) : l.w;
@@ -304,8 +454,12 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
                   return { left, top: l.y - l.h / 2, width: w, minHeight: l.h, ["--c" as string]: l.color, fontSize: fontFor(l.depth) };
                 })()}
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); setSelected(l.node.id); }}
-                onDoubleClick={(e) => { e.stopPropagation(); setSelected(l.node.id); setEditing(l.node.id); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (armed && armed !== l.node.id) { addLink(armed, l.node.id); setArmed(null); return; }
+                  selectNode(l.node.id);
+                }}
+                onDoubleClick={(e) => { e.stopPropagation(); selectNode(l.node.id); setEditing(l.node.id); }}
               >
                 {isEdit ? (
                   <textarea
@@ -322,6 +476,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
                 ) : (
                   <span className="mm-text">{l.lines.join("\n")}</span>
                 )}
+                {prio > 0 && <span className={`mm-badge p${prio}`} title={`Важность ${prio} из 3`} aria-label={`Важность ${prio} из 3`}>{PRIORITY_MARK[prio]}</span>}
                 {hidden && <button className="mm-count" title="Развернуть" onClick={(e) => { e.stopPropagation(); toggleCollapse(l.node.id); }}>{countAll(l.node) - 1}</button>}
                 {isSel && !isEdit && (
                   <>
@@ -329,15 +484,91 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
                     {l.node.children.length > 0 && !hidden && (
                       <button className={`mm-fold ${l.side === -1 ? "left" : "right"}`} title="Свернуть (пробел)" onClick={(e) => { e.stopPropagation(); toggleCollapse(l.node.id); }}>–</button>
                     )}
+                    <button className="mm-link-handle" title="Связь с другим узлом — потяните на него" aria-label="Связать с другим узлом"
+                            onPointerDown={(e) => startLinking(e, l.node.id)} onPointerMove={moveLinking} onPointerUp={endLinking} onPointerCancel={() => setLinking(null)}
+                            onClick={(e) => e.stopPropagation()} />
                   </>
                 )}
               </div>
             );
           })}
+          {/* подписи на связях */}
+          {visibleLinks.filter(({ l }) => l.note).map(({ l, a, b }) => {
+            const g = linkGeom(a, b);
+            return (
+              <button key={"ln" + l.id} className="mm-edge-note link" style={{ left: g.mid.x, top: g.mid.y, ["--c" as string]: l.color ?? LINK_COLOR }}
+                      onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); selectLink(l.id); }}>
+                {l.note}
+              </button>
+            );
+          })}
         </div>
+
+        {/* панель выбранного узла — над узлом, в экранных координатах (не масштабируется вместе с картой) */}
+        {selL && !editing && (() => {
+          const pos = toScreen(selL.x, selL.y - selL.h / 2);
+          const isRoot = selL.depth === 0; const n = selL.node; const cur = n.priority ?? 0;
+          return (
+            <div className="mm-panel" style={{ left: pos.left, top: pos.top }} role="toolbar" aria-label="Настройки узла"
+                 onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+              <div className="mm-panel-row">
+                {!isRoot && swatches(n.color, (c) => patchNode(n.id, { color: c }), "Цвет ветки как у родителя")}
+                {!isRoot && <span className="mm-sep" />}
+                <div className="mm-seg" role="group" aria-label="Толщина линии" title="Толщина линии: тоньше · автоматически · толще">
+                  {([-1, 0, 1] as const).map((a) => (
+                    <button key={a} className={(n.width ?? 0) === a ? "on" : ""} onClick={() => patchNode(n.id, { width: a === 0 ? undefined : a })}
+                            aria-label={a === -1 ? "Тоньше" : a === 1 ? "Толще" : "Автоматически"} aria-pressed={(n.width ?? 0) === a}>
+                      <svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true"><path d="M1 6 H17" stroke="currentColor" strokeLinecap="round" strokeWidth={a === -1 ? 1.2 : a === 0 ? 2.4 : 4} /></svg>
+                    </button>
+                  ))}
+                </div>
+                <span className="mm-sep" />
+                <div className="mm-seg prio" role="group" aria-label="Важность" title="Важность (клавиши 1–3, 0 — снять)">
+                  {([1, 2, 3] as const).map((p) => (
+                    <button key={p} className={cur === p ? "on" : ""} onClick={() => setPriority(n.id, p)} aria-pressed={cur === p} aria-label={`Важность ${p}`}>{PRIORITY_MARK[p]}</button>
+                  ))}
+                </div>
+                {!isRoot && <span className="mm-sep" />}
+                {!isRoot && <button className={`mm-pbtn ${noteEdit || n.note ? "on" : ""}`} onClick={() => setNoteEdit((v) => !v)} title="Подпись на линии от родителя">Подпись</button>}
+                <span className="mm-sep" />
+                <button className={`mm-pbtn ${armed === n.id ? "on" : ""}`} onClick={() => setArmed(armed === n.id ? null : n.id)} title="Связать: нажмите, затем выберите второй узел">
+                  {armed === n.id ? "Выберите узел…" : "Связать"}
+                </button>
+              </div>
+              {noteEdit && !isRoot && (
+                <div className="mm-panel-row">
+                  <input autoFocus className="input mm-note-input" value={n.note ?? ""} placeholder="Подпись на линии, например «зависит от»"
+                         onChange={(e) => patchNode(n.id, { note: e.target.value || undefined })}
+                         onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); setNoteEdit(false); } }} />
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* панель выбранной связи */}
+        {selLk && (() => {
+          const g = linkGeom(selLk.a, selLk.b); const pos = toScreen(g.mid.x, g.mid.y); const l = selLk.l;
+          return (
+            <div className="mm-panel" style={{ left: pos.left, top: pos.top - 14 }} role="toolbar" aria-label="Настройки связи"
+                 onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+              <div className="mm-panel-row">
+                {swatches(l.color, (c) => patchLink(l.id, { color: c }), "Серый по умолчанию")}
+                <span className="mm-sep" />
+                <input className="input mm-note-input" value={l.note ?? ""} placeholder="Подпись связи"
+                       onChange={(e) => patchLink(l.id, { note: e.target.value || undefined })}
+                       onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }} />
+                <span className="mm-sep" />
+                <button className="mm-pbtn danger" onClick={() => removeLink(l.id)} title="Убрать связь (Del)">Убрать</button>
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="mm-help">
           <span><kbd>Tab</kbd> подпункт</span><span><kbd>Enter</kbd> соседний</span><span><kbd>F2</kbd> / двойной клик — текст</span>
-          <span><kbd>Del</kbd> удалить</span><span><kbd>Пробел</kbd> свернуть</span><span>колёсико — масштаб, тянуть фон — сдвиг</span>
+          <span><kbd>Del</kbd> удалить</span><span><kbd>Пробел</kbd> свернуть</span><span><kbd>1</kbd>–<kbd>3</kbd> важность</span>
+          <span>точка под узлом — потянуть на другой узел: связь</span><span>колёсико — масштаб, тянуть фон — сдвиг</span>
         </div>
       </div>
     </div>

@@ -7,3 +7,5 @@ dist/
 .vscode/
 _mcp_test.db
 _*.db
+_*.tgz
+Claude outputs/

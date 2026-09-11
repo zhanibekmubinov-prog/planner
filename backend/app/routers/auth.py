@@ -74,6 +74,37 @@ async def _verify_id_token(id_token: str) -> dict:
                       issuer=f"https://login.microsoftonline.com/{settings.ms_tenant_id}/v2.0")
 
 
+def _sign_in_user(db: Session, email: str, name: str, oid: str | None) -> models.User:
+    """Найти или завести пользователя по почте и связать его с записью «Люди».
+    Общая часть для входа через Microsoft и входа из платформы (v1.5) — чтобы оба
+    пути заводили сотрудника одинаково, а не двумя разными способами."""
+    email = (email or "").strip().lower()
+    if not email:
+        raise HTTPException(401, "в учётной записи нет почты")
+    if settings.allowed_domains and email.split("@")[-1] not in settings.allowed_domains:
+        raise HTTPException(403, f"домен {email.split('@')[-1]} не разрешён")
+
+    cond = models.User.email == email
+    if oid: cond = cond | (models.User.ms_oid == oid)   # Н3: без oid условие «ms_oid IS NULL» совпало бы с любым приглашённым
+    user = db.scalar(select(models.User).where(cond))
+    if not user:
+        user = models.User(email=email, name=name, ms_oid=oid, is_admin=(email == settings.owner_email.lower()))
+        db.add(user)
+    else:
+        user.name = user.name or name; user.ms_oid = user.ms_oid or oid
+        if email == settings.owner_email.lower(): user.is_admin = True
+    user.last_login_at = datetime.now(timezone.utc)
+    db.flush()
+    # Связать с записью «Люди» по почте (или создать), чтобы поручения доходили до пользователя
+    person = db.scalar(select(models.Person).where(models.Person.user_id == user.id)) or \
+             db.scalar(select(models.Person).where(models.Person.email == email))
+    if not person:
+        person = models.Person(name=user.name, email=email); db.add(person)
+    person.user_id = user.id
+    if user.telegram_chat_id and not person.telegram_chat_id: person.telegram_chat_id = user.telegram_chat_id
+    return user
+
+
 @router.get("/callback")
 async def callback(code: str = Query(...), state: str = Query(...), db: Session = Depends(get_db)):
     _cleanup_states()
@@ -98,27 +129,7 @@ async def callback(code: str = Query(...), state: str = Query(...), db: Session 
     oid = claims.get("oid")
     if not email:
         raise HTTPException(401, "в учётной записи нет почты")
-    if settings.allowed_domains and email.split("@")[-1] not in settings.allowed_domains:
-        raise HTTPException(403, f"домен {email.split('@')[-1]} не разрешён")
-
-    cond = models.User.email == email
-    if oid: cond = cond | (models.User.ms_oid == oid)   # Н3: без oid условие «ms_oid IS NULL» совпало бы с любым приглашённым
-    user = db.scalar(select(models.User).where(cond))
-    if not user:
-        user = models.User(email=email, name=name, ms_oid=oid, is_admin=(email == settings.owner_email.lower()))
-        db.add(user)
-    else:
-        user.name = user.name or name; user.ms_oid = user.ms_oid or oid
-        if email == settings.owner_email.lower(): user.is_admin = True
-    user.last_login_at = datetime.now(timezone.utc)
-    db.flush()
-    # Связать с записью «Люди» по почте (или создать), чтобы поручения доходили до пользователя
-    person = db.scalar(select(models.Person).where(models.Person.user_id == user.id)) or \
-             db.scalar(select(models.Person).where(models.Person.email == email))
-    if not person:
-        person = models.Person(name=user.name, email=email); db.add(person)
-    person.user_id = user.id
-    if user.telegram_chat_id and not person.telegram_chat_id: person.telegram_chat_id = user.telegram_chat_id
+    user = _sign_in_user(db, email, name, oid)
     if pending is not None:
         pending.user_id = user.id
         db.commit()
@@ -128,6 +139,56 @@ async def callback(code: str = Query(...), state: str = Query(...), db: Session 
     token = issue_session(user)
     front = (settings.frontend_url or "/").rstrip("/")
     return RedirectResponse(f"{front}/#token={token}")
+
+
+# ---------------- вход из платформы CIS: планнер открыт вкладкой внутри неё (v1.5) ----------------
+#
+# Почему не «просто iframe с обычным входом»: login.microsoftonline.com отдаёт
+# X-Frame-Options: DENY, внутри рамки форма Microsoft не откроется. Плюс браузер делит
+# localStorage по верхнему сайту, поэтому сессия, полученная при прямом заходе на планнер,
+# внутри рамки не видна. Значит вход отдаёт платформа: она уже опознала сотрудника через
+# тот же Entra и подписывает одноразовый билет общим секретом.
+
+PLATFORM_ISS = "cis-platform"     # кто выписал билет
+PLATFORM_AUD = "cis-planner"      # кому он адресован
+
+_used_tickets: dict[str, float] = {}   # jti → когда истекает; билет срабатывает один раз
+# Хватает памяти процесса, пока бэкенд один (Dockerfile: один uvicorn без --workers).
+# Станет несколько процессов — переносить в таблицу, иначе билет сработает по разу в каждом.
+
+
+@router.get("/platform")
+def platform_login(t: str = Query(...), db: Session = Depends(get_db)):
+    """Обменять одноразовый билет платформы на сессию планнера и отправить во фронт —
+    так же, как после возврата от Microsoft."""
+    if not settings.platform_sso_ready:
+        raise HTTPException(503, "вход из платформы не настроен (PLATFORM_SSO_SECRET)")
+    now = time.time()
+    for k in [k for k, exp in _used_tickets.items() if exp < now]:
+        _used_tickets.pop(k, None)
+    try:
+        data = jwt.decode(t, settings.platform_sso_secret, algorithms=["HS256"],
+                          audience=PLATFORM_AUD, issuer=PLATFORM_ISS,
+                          options={"require": ["exp", "iat", "jti", "email"]})
+    except jwt.PyJWTError:
+        raise HTTPException(401, "билет платформы недействителен")
+    # Потолок возраста на нашей стороне: даже если платформа однажды выпишет билет на час,
+    # украденная ссылка не будет жить дольше пары минут.
+    if now - float(data["iat"]) > settings.platform_ticket_max_age_sec:
+        raise HTTPException(401, "билет платформы просрочен")
+    jti = str(data["jti"])
+    if jti in _used_tickets:
+        raise HTTPException(401, "билет платформы уже использован")
+    _used_tickets[jti] = float(data["exp"])
+
+    email = str(data["email"])
+    user = _sign_in_user(db, email, str(data.get("name") or "").strip() or email.split("@")[0], None)
+    db.commit()
+    token = issue_session(user)
+    front = (settings.frontend_url or "/").rstrip("/")
+    # embed=1 остаётся в query (фрагмент фронт съедает, забирая токен) — по нему фронт понимает,
+    # что он внутри платформы
+    return RedirectResponse(f"{front}/?embed=1#token={token}")
 
 
 # ---------------- вход внешнего участника по одноразовой ссылке (v0.10) ----------------

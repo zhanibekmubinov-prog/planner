@@ -31,6 +31,8 @@ os.environ.update({
     # каналы выключены — тесты не ходят в сеть
     "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": "",
     "MS_TENANT_ID": "", "MS_CLIENT_ID": "", "MS_CLIENT_SECRET": "", "MS_MAILBOX": "", "MS_REDIRECT_URI": "",
+    # v1.5: вход из платформы CIS (вкладка «Планнер») — общий секрет с платформой
+    "PLATFORM_SSO_SECRET": "test-platform-sso-secret-0123456789",
     "FRONTEND_URL": "https://front.test", "PUBLIC_URL": "",
     "APP_TIMEZONE": "Asia/Oral", "DIGEST_TIME": "08:30", "DIGEST_CHANNELS": "telegram,email", "DIGEST_WEEKDAYS_ONLY": "false",
 })

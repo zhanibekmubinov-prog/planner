@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     ms_redirect_uri: str = ""      # https://<backend>/api/auth/callback — должен совпадать с Entra
     allowed_email_domains: str = ""  # напр. "cis.kz" — пусто = любой домен тенанта
 
+    # --- Вход из платформы CIS (планнер открыт вкладкой внутри платформы) ---
+    # Платформа опознаёт сотрудника своим входом Microsoft и выдаёт одноразовый билет,
+    # подписанный этим секретом; мы меняем билет на свою сессию (см. routers/auth.py).
+    # Пусто = вход из платформы выключен.
+    platform_sso_secret: str = ""
+    platform_ticket_max_age_sec: int = 120   # потолок возраста билета, даже если платформа выписала длиннее
+
     # --- Напоминания (шаг 4). Пустое значение = канал выключен. ---
     scheduler_enabled: bool = True
     scheduler_interval_sec: int = 60
@@ -64,6 +71,10 @@ class Settings(BaseSettings):
     @property
     def allowed_domains(self) -> list[str]:
         return [d.strip().lower() for d in self.allowed_email_domains.split(",") if d.strip()]
+
+    @property
+    def platform_sso_ready(self) -> bool:
+        return len(self.platform_sso_secret.strip()) >= 16
 
     @property
     def ms_login_ready(self) -> bool:

@@ -1,6 +1,7 @@
 // Вход через Microsoft, чип пользователя в панели и окно профиля.
 import { useEffect, useState } from "react";
 import { api, API_BASE, errorText, getSession, post, put, setSession, User } from "./api";
+import { isEmbedded } from "./embed";
 import { Store } from "./store";
 
 /** Забирает #token=… после возврата от Microsoft. Возвращает true, если сессия есть. */
@@ -13,7 +14,32 @@ export function pickUpSession(): boolean {
 type LoginCfg = { microsoft: boolean; guest_login?: boolean };
 type GuestSession = { token: string; need_password?: boolean; has_password?: boolean };
 
+/** Сессии нет, а мы внутри рамки платформы: кнопку Microsoft показывать бессмысленно —
+ *  её форма в рамке не открывается. Объясняем и даём выход в отдельную вкладку. */
+function EmbeddedLoginScreen({ error }: { error?: string | null }) {
+  return (
+    <div className="login">
+      <div className="login-card">
+        <p className="login-lead">Сессия планнера не открылась.</p>
+        <span className="hint">
+          Обновите страницу платформы — раздел «Планнер» выдаст новый ключ входа. Ключ действует пару минут
+          и срабатывает один раз, поэтому после долгой паузы или возврата «назад» его нужно получить заново.
+        </span>
+        <a className="btn primary" href={window.location.origin} target="_blank" rel="noopener noreferrer">
+          Открыть планнер в отдельной вкладке
+        </a>
+        {error && <p className="login-error">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
 export function LoginScreen({ error }: { error?: string | null }) {
+  if (isEmbedded()) return <EmbeddedLoginScreen error={error} />;
+  return <FullLoginScreen error={error} />;
+}
+
+function FullLoginScreen({ error }: { error?: string | null }) {
   const [cfg, setCfg] = useState<LoginCfg | null>(null);
   const [busy, setBusy] = useState(!!guestTokenFromHash());
   const [msg, setMsg] = useState<string | null>(null);

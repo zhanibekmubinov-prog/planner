@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ConfirmProvider } from "./confirm";
+import { applyEmbedFlag } from "./embed";
 import { ToastProvider } from "./toast";
 import { announceUpdate } from "./update";
 import { registerSW } from "virtual:pwa-register";
@@ -26,6 +27,7 @@ import "@fontsource/source-code-pro/500.css";
 import "@fontsource/michroma/400.css";
 
 document.documentElement.dataset.theme = "journal";
+applyEmbedFlag();   // вкладка внутри платформы CIS — см. embed.ts
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

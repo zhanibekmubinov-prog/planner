@@ -50,6 +50,10 @@ a { color: var(--accent); }
 .brand { display: flex; align-items: baseline; gap: 8px; padding: 18px 16px 12px; }
 .brand h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; margin: 0; color: #fff; }
 .brand .ver { font-family: var(--mono); font-size: 11px; color: var(--side-muted); }
+/* Вкладка внутри платформы CIS: свой логотип не рисуем — шапка платформы уже сверху,
+   а номер версии оставляем, по нему видно, что задеплоено (см. embed.ts). */
+[data-embed="1"] .side .brand h1 { display: none; }
+[data-embed="1"] .side .brand { padding: 12px 16px 8px; }
 .side-section { padding: 10px 8px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--side-muted); display: flex; justify-content: space-between; align-items: center; }
 .plus, .side-section button, .col-head .add {
   width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;

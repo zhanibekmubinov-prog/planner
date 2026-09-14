@@ -79,26 +79,45 @@ def test_task_in_trash_invisible_to_mcp_and_delegations(client, api, db, jack, a
 
 # ═══════════════════════ Проект ═══════════════════════
 
-def test_project_delete_and_restore(client, api, db, jack, nur, aida):
+def test_project_delete_takes_tasks_and_restore_brings_them_back(client, api, db, jack, nur, aida):
+    """v1.6 (решение владельца 2026-09-14): задачи проекта уходят в корзину вместе с ним и возвращаются вместе с ним."""
     d, p, t, t2 = _setup(api, jack, nur)
     ok(client.delete(f"/api/projects/{p['id']}", headers=jack.h), 204)
     assert client.get(f"/api/projects/{p['id']}", headers=jack.h).status_code == 404
     assert ok(client.get(f"/api/projects?direction_id={d['id']}", headers=jack.h)) == []
     assert count(db, models.Share, models.Share.entity_type == "project") == 0
-    # задача проекта жива, видна владельцу, направление сохранено; Аида (view на проект) её больше не видит
-    got = api.get_task(jack, t["id"])
-    assert [x["id"] for x in got["directions"]] == [d["id"]]
+    # задача проекта ушла в корзину вместе с ним: её нет ни в карточке, ни во «Все задачи», ни в «Без направления»
+    assert client.get(f"/api/tasks/{t['id']}", headers=jack.h).status_code == 404
+    assert [x["id"] for x in ok(client.get("/api/tasks", headers=jack.h))] == [t2["id"]]
+    assert ok(client.get("/api/tasks?orphans=true", headers=jack.h)) == []
     assert client.get(f"/api/tasks/{t['id']}", headers=aida.h).status_code == 404
+    # задача, лежавшая прямо в направлении, не тронута
+    assert [x["id"] for x in api.get_task(jack, t2["id"])["directions"]] == [d["id"]]
     # редактору направления проект тоже не виден и не редактируется
     assert client.put(f"/api/projects/{p['id']}", json={"direction_id": d["id"], "name": "x"}, headers=nur.h).status_code == 404
     # нельзя положить задачу в проект из корзины
     assert client.post("/api/tasks", json={"title": "в корзину", "project_id": p["id"], "direction_ids": [], "tool_ids": []}, headers=jack.h).status_code == 404
     tr = ok(client.get("/api/trash", headers=jack.h))
     assert [x["id"] for x in tr["projects"]] == [p["id"]] and tr["projects"][0]["deleted_at"]
+    assert [x["id"] for x in tr["tasks"]] == [t["id"]]
+    assert tr["tasks"][0]["deleted_at"] == tr["projects"][0]["deleted_at"], "одно действие — один timestamp"
     back = ok(client.post(f"/api/projects/{p['id']}/restore", headers=jack.h))
     assert back["deleted_at"] is None and back["access"] == "owner"
     assert api.get_task(jack, t["id"])["project_id"] == p["id"]
     assert [x["id"] for x in ok(client.get(f"/api/tasks?project_id={p['id']}", headers=jack.h))] == [t["id"]]
+    assert ok(client.get("/api/trash", headers=jack.h))["tasks"] == []
+
+
+def test_task_deleted_separately_stays_in_trash_after_project_restore(client, api, jack, nur):
+    """Задача, удалённая раньше и отдельно, не возвращается «заодно» с проектом — у неё свой timestamp."""
+    d, p, t, t2 = _setup(api, jack, nur)
+    t_own = api.task(jack, "Удалена отдельно", project_id=p["id"])
+    ok(client.delete(f"/api/tasks/{t_own['id']}", headers=jack.h), 204)
+    ok(client.delete(f"/api/projects/{p['id']}", headers=jack.h), 204)
+    ok(client.post(f"/api/projects/{p['id']}/restore", headers=jack.h))
+    ids = [x["id"] for x in ok(client.get(f"/api/tasks?project_id={p['id']}", headers=jack.h))]
+    assert ids == [t["id"]], ids
+    assert [x["id"] for x in ok(client.get("/api/trash", headers=jack.h))["tasks"]] == [t_own["id"]]
 
 
 def test_project_restore_with_direction_in_trash_is_409(client, api, jack, nur):
@@ -112,7 +131,9 @@ def test_project_restore_with_direction_in_trash_is_409(client, api, jack, nur):
 
 # ═══════════════════════ Направление ═══════════════════════
 
-def test_direction_delete_cascades_to_projects_keeps_tasks(client, api, db, jack, nur, aida):
+def test_direction_delete_cascades_to_projects_and_tasks(client, api, db, jack, nur, aida):
+    """v1.6: направление забирает в корзину свои проекты и задачи. Задача, которая числится ещё
+    в одном живом направлении, остаётся там — задачи кросс-направленческие."""
     d, p, t, t2 = _setup(api, jack, nur)
     other = api.direction(jack, "Другое")
     t3 = api.task(jack, "В двух направлениях", direction_ids=[d["id"], other["id"]])
@@ -125,25 +146,28 @@ def test_direction_delete_cascades_to_projects_keeps_tasks(client, api, db, jack
     assert count(db, models.Share) == 0
     db.expire_all()
     assert db.get(models.Project, p["id"]).deleted_at is not None
-    # задачи живы: у t и t2 направлений не осталось (без направления), у t3 осталось «Другое»
-    assert api.get_task(jack, t["id"])["directions"] == [] and api.get_task(jack, t2["id"])["directions"] == []
+    # t (в проекте) и t2 (прямо в направлении) ушли в корзину; t3 живёт в «Другом»
+    assert client.get(f"/api/tasks/{t['id']}", headers=jack.h).status_code == 404
+    assert client.get(f"/api/tasks/{t2['id']}", headers=jack.h).status_code == 404
     assert [x["id"] for x in api.get_task(jack, t3["id"])["directions"]] == [other["id"]]
+    assert [x["id"] for x in ok(client.get("/api/tasks", headers=jack.h))] == [t3["id"]]
     # связи в БД сохранены — нужны для восстановления
     assert count(db, models.task_directions, models.task_directions.c.direction_id == d["id"]) == 3
-    # «Без направления»
-    orphans = {x["id"] for x in ok(client.get("/api/tasks?orphans=true", headers=jack.h))}
-    assert orphans == {t["id"], t2["id"]}, orphans
+    # «Без направления» больше не пополняется удалёнными контейнерами
+    assert ok(client.get("/api/tasks?orphans=true", headers=jack.h)) == []
     assert ok(client.get("/api/tasks?orphans=true", headers=nur.h)) == []
-    # корзина: направление и проект (удалены одним действием)
+    # корзина: направление, проект и обе задачи — одним действием, одним timestamp
     tr = ok(client.get("/api/trash", headers=jack.h))
     assert [x["id"] for x in tr["directions"]] == [d["id"]] and [x["id"] for x in tr["projects"]] == [p["id"]]
-    # restore возвращает направление, проект и связи задач; доступ (шары) не возвращается
+    assert sorted(x["id"] for x in tr["tasks"]) == sorted([t["id"], t2["id"]])
+    assert {x["deleted_at"] for x in tr["tasks"]} == {tr["directions"][0]["deleted_at"]}
+    # restore возвращает направление, проект и задачи; доступ (шары) не возвращается
     back = ok(client.post(f"/api/directions/{d['id']}/restore", headers=jack.h))
     assert back["deleted_at"] is None
     assert ok(client.get(f"/api/projects/{p['id']}", headers=jack.h))["deleted_at"] is None
     assert [x["id"] for x in api.get_task(jack, t2["id"])["directions"]] == [d["id"]]
     assert api.get_task(jack, t["id"])["project_id"] == p["id"]
-    assert ok(client.get("/api/tasks?orphans=true", headers=jack.h)) == []
+    assert ok(client.get("/api/trash", headers=jack.h)) == {"directions": [], "projects": [], "tasks": []}
     assert ok(client.get("/api/directions", headers=nur.h)) == []
 
 
@@ -178,8 +202,8 @@ def test_purge_one_and_all(client, api, db, jack, nur):
     ok(client.delete("/api/trash", headers=jack.h), 204)
     db.expire_all()
     assert db.get(models.Direction, d["id"]) is None and db.get(models.Project, p["id"]) is None
-    alive_t = db.get(models.Task, t["id"])
-    assert alive_t is not None and alive_t.project_id is None and alive_t.deleted_at is None, "живая задача остаётся, теряет проект"
+    # v1.6: задача ушла в корзину вместе с проектом, значит и стирается вместе с ним — висячих строк не остаётся
+    assert db.get(models.Task, t["id"]) is None
     assert count(db, models.task_directions) == 0 and count(db, models.Share) == 0
     assert ok(client.get("/api/trash", headers=jack.h)) == {"directions": [], "projects": [], "tasks": []}
 

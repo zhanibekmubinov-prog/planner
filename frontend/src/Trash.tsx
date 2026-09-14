@@ -37,6 +37,14 @@ export default function TrashPage({ store }: Props) {
 
   const total = trash ? trash.directions.length + trash.projects.length + trash.tasks.length : 0;
   const dirName = (id: number | null | undefined) => store.directions.find((d) => d.id === id)?.name ?? trash?.directions.find((d) => d.id === id)?.name;
+  // v1.6: задачи, ушедшие вместе с контейнером (тот же момент удаления), показываем счётчиком в его строке,
+  // а не отдельными строками — иначе один удалённый проект заваливает корзину десятком задач.
+  const withContainer = (t: Task) => trash?.projects.some((p) => p.deleted_at === t.deleted_at && p.id === t.project_id)
+    || trash?.directions.some((d) => d.deleted_at === t.deleted_at);
+  const insideCount = (deletedAt?: string | null, projectId?: number) =>
+    (trash?.tasks ?? []).filter((t) => t.deleted_at === deletedAt && (projectId === undefined || t.project_id === projectId)).length;
+  const ownTasks = (trash?.tasks ?? []).filter((t) => !withContainer(t));
+  const inside = (n: number) => (n ? ` · внутри ${nTasks(n)}` : "");
 
   return (
     <div className="page trash-page">
@@ -55,15 +63,15 @@ export default function TrashPage({ store }: Props) {
       ) : (
         <>
           <Group title="Направления" items={trash.directions} render={(d: Direction) => (
-            <TrashRow key={d.id} color={dirColor(d)} name={d.name} meta={`удалено ${showDateTime(d.deleted_at)} · проекты внутри вернутся вместе с ним`}
+            <TrashRow key={d.id} color={dirColor(d)} name={d.name} meta={`удалено ${showDateTime(d.deleted_at)} · проекты и задачи внутри вернутся вместе с ним${inside(insideCount(d.deleted_at))}`}
               busy={busy === `direction${d.id}`} onRestore={() => restore("direction", d.id)} onPurge={() => purge("direction", d.id, d.name)} />
           )} />
           <Group title="Проекты" items={trash.projects} render={(p: Project) => {
             const dirInTrash = trash.directions.some((d) => d.id === p.direction_id);
-            return <TrashRow key={p.id} color={p.color || "var(--line-strong)"} name={p.name} meta={`${dirName(p.direction_id) ?? "направление"} · удалён ${showDateTime(p.deleted_at)}${dirInTrash ? " · направление тоже в корзине — сначала верните его" : ""}`}
+            return <TrashRow key={p.id} color={p.color || "var(--line-strong)"} name={p.name} meta={`${dirName(p.direction_id) ?? "направление"} · удалён ${showDateTime(p.deleted_at)}${inside(insideCount(p.deleted_at, p.id))}${dirInTrash ? " · направление тоже в корзине — сначала верните его" : ""}`}
               busy={busy === `project${p.id}`} onRestore={() => restore("project", p.id)} onPurge={() => purge("project", p.id, p.name)} />;
           }} />
-          <Group title="Задачи" items={trash.tasks} render={(t: Task) => (
+          <Group title="Задачи" items={ownTasks} render={(t: Task) => (
             <TrashRow key={t.id} color={t.directions[0] ? dirColor(t.directions[0]) : "var(--line-strong)"} name={t.title} meta={`#${t.id} · ${t.directions.map((d) => d.name).join(", ") || "без направления"} · удалена ${showDateTime(t.deleted_at)}`}
               busy={busy === `task${t.id}`} onRestore={() => restore("task", t.id)} onPurge={() => purge("task", t.id, t.title)} />
           )} />

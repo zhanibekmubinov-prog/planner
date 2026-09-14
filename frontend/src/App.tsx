@@ -12,6 +12,7 @@ import { PeoplePage, ToolsPage } from "./Registry";
 import MindMapEditor from "./MindMapEditor";
 import MindMapsPage from "./MindMaps";
 import Overview from "./Overview";
+import ActionTracker from "./ActionTracker";
 import ProjectMenu, { ProjectAnchor, projectAnchorFromEvent, projectBody, ProjectModal, RenameProjectModal } from "./ProjectMenu";
 import ShareModal, { ShareTarget } from "./ShareModal";
 import SharedPage from "./SharedPage";
@@ -45,7 +46,8 @@ function Workspace() {
   const [pmenu, setPmenu] = useState<ProjectAnchor | null>(null);       // контекстное меню проекта
   const [renaming, setRenaming] = useState<Direction | null>(null);
   const [prenaming, setPrenaming] = useState<Project | null>(null);
-  const [projModal, setProjModal] = useState<{ direction: Direction; project: Project | null } | null>(null);
+  // toDirectionId — проект перетащили на другое направление: окно открывается сразу с ним выбранным (v1.6)
+  const [projModal, setProjModal] = useState<{ direction: Direction; project: Project | null; toDirectionId?: number } | null>(null);
   const [share, setShare] = useState<ShareTarget | null>(null);
   const toast = useToast();
   const updateReady = useUpdateAvailable();
@@ -119,6 +121,10 @@ function Workspace() {
     onView: (v) => { setView(v); if (v.kind !== "board") setSelectedId(null); },
     onNewDirection: () => setDirModal({ open: true, direction: null }), onNewProject: (d) => setProjModal({ direction: d, project: null }),
     onDirectionMenu: openMenu, onProjectMenu: openProjectMenu,
+    // v1.6: задачи под проектом в панели и перетаскивание задач/проектов
+    store,
+    onOpenTask: (t) => { const p = store.projects.find((x) => x.id === t.project_id); setView({ kind: "board", directionId: p?.direction_id ?? t.directions[0]?.id ?? null, projectId: p?.id }); setSelectedId(t.id); },
+    onMoveProject: (p, to) => setProjModal({ direction: store.directions.find((d) => d.id === p.direction_id) ?? to, project: p, toDirectionId: to.id }),
   };
 
   return (
@@ -159,6 +165,10 @@ function Workspace() {
             onDirectionMenu={(e) => openMenu(direction, e)} onProjectMenu={openProjectMenu} onShare={() => shareDirection(direction)}
             onOpenMindmap={(id) => setView({ kind: "mindmap", id })} onMindmaps={() => setView({ kind: "mindmaps", directionId: direction.id })}
             onRestoreProject={restoreProject} />
+        ) : view.kind === "tracker" ? (
+          <ActionTracker store={store} onOpenTask={navProps.onOpenTask!}
+            onOpenProject={(p) => { setView({ kind: "board", directionId: p.direction_id, projectId: p.id }); setSelectedId(null); }}
+            onOpenDirection={(d) => { setView({ kind: "direction", directionId: d.id }); setSelectedId(null); }} />
         ) : view.kind === "archive" ? (
           <ArchivePage store={store} onOpenDirection={(id) => setView({ kind: "direction", directionId: id })} onOpenProject={(p) => setView({ kind: "board", directionId: p.direction_id, projectId: p.id })} />
         ) : view.kind === "guests" ? (
@@ -229,7 +239,7 @@ function Workspace() {
       {renaming && <RenameModal store={store} direction={renaming} onClose={() => setRenaming(null)} />}
       {prenaming && <RenameProjectModal store={store} project={prenaming} onClose={() => setPrenaming(null)} />}
       {projModal && (
-        <ProjectModal store={store} direction={projModal.direction} project={projModal.project} onClose={() => setProjModal(null)}
+        <ProjectModal store={store} direction={projModal.direction} project={projModal.project} toDirectionId={projModal.toDirectionId} onClose={() => setProjModal(null)}
           onSaved={(p) => { setProjModal(null); if (!projModal.project) { setView({ kind: "board", directionId: p.direction_id, projectId: p.id }); setSelectedId(null); } }} />
       )}
       {share && <ShareModal store={store} target={share} onClose={() => setShare(null)} />}

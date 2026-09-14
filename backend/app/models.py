@@ -85,6 +85,8 @@ class Project(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина
+    # v1.6: ручной порядок в списке направления (перетаскивание). 0 у всех = порядок по id, как было
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     direction: Mapped[Direction] = relationship(back_populates="all_projects")
     tasks: Mapped[list["Task"]] = relationship(primaryjoin="and_(Task.project_id == Project.id, Task.deleted_at.is_(None))", viewonly=True)  # живые
     all_tasks: Mapped[list["Task"]] = relationship(back_populates="project")
@@ -126,12 +128,28 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина
+    # v1.6: ручной порядок внутри проекта / направления (перетаскивание). 0 у всех = прежний порядок по приоритету
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # только живые направления: связи с направлениями в корзине остаются в task_directions (нужны для восстановления)
     directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks",
                                                        secondaryjoin="and_(task_directions.c.direction_id == Direction.id, Direction.deleted_at.is_(None))")
     tools: Mapped[list["Tool"]] = relationship(secondary=tool_tasks, back_populates="tasks")
     delegations: Mapped[list["Delegation"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     reminders: Mapped[list["Reminder"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+
+    @property
+    def assignees(self) -> list[dict]:
+        """v1.6: ответственные по задаче — для Action Tracker и списков, чтобы не тянуть поручения отдельно.
+        Открытые поручения впереди; на человека — одна строка (первое его поручение)."""
+        out: list[dict] = []
+        seen: set[int] = set()
+        for d in sorted(self.delegations, key=lambda x: (x.status != DelegationStatus.open, x.id or 0)):
+            if d.person_id in seen or d.person is None:
+                continue
+            seen.add(d.person_id)
+            out.append({"delegation_id": d.id, "person_id": d.person_id, "name": d.person.name,
+                        "status": d.status, "check_at": d.check_at, "comment": d.comment})
+        return out
 
 
 class Person(Base):

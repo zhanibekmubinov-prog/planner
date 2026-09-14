@@ -75,6 +75,7 @@ export type Project = {
   id: number; direction_id: number; name: string; description?: string | null; goal?: string | null;
   color?: string | null; status: DirectionStatus; created_at: string; owner?: UserBrief | null; access?: Access | null;
   deleted_at?: string | null;
+  sort_order?: number;   // v1.6: ручной порядок в направлении (перетаскивание)
 };
 export type MoveMode = "move" | "copy";
 export type ProjectIn = Omit<Project, "id" | "created_at" | "owner" | "access" | "deleted_at"> & { move_mode?: MoveMode; grant_access_user_ids?: number[] };
@@ -104,12 +105,17 @@ export type ToolIn = Omit<Tool, "id" | "direction_ids"> & { task_ids: number[]; 
 /** Пункт чеклиста внутри задачи (v0.7). id — короткая случайная строка, генерируется на клиенте. */
 export type ChecklistItem = { id: string; text: string; done: boolean };
 
+/** v1.6: ответственный по задаче — строка поручения, отдаётся прямо в задаче (см. TaskAssignee в schemas.py). */
+export type TaskAssignee = { delegation_id: number; person_id: number; name: string; status: DelegationStatus; check_at?: string | null; comment?: string | null };
+
 export type Task = {
   id: number; title: string; description?: string | null; status: TaskStatus; priority: number;
   deadline?: string | null; next_check_at?: string | null; outlook_event_id?: string | null;
   created_at: string; updated_at: string; directions: Direction[]; tools: Tool[]; owner?: UserBrief | null;
   project_id?: number | null; access?: Access | null; assigned_to_me?: boolean; checklist?: ChecklistItem[];
   deleted_at?: string | null;
+  sort_order?: number;            // v1.6: ручной порядок внутри проекта / направления
+  assignees?: TaskAssignee[];     // v1.6: ответственные (из поручений)
 };
 export type TaskIn = {
   title: string; description?: string | null; status: TaskStatus; priority: number;

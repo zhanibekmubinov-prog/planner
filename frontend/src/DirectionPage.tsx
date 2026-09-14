@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { canEdit, Direction, dirColor, errorText, isOverdue, nProjects, plural, Project, projColor, put, showDate, STATUS_LABEL, Task, toIn } from "./api";
 import { checklistProgress } from "./Checklist";
 import { useDeletion } from "./deletion";
+import { DRAG_PROJECT, dragId, dropProjectOnProject, dropTaskOnTask, hasType } from "./dnd";
 import MiniMenu, { miniAnchor, MiniAnchor } from "./MiniMenu";
 import { createMindMap, MindButton } from "./MindMaps";
 import { buildReport } from "./Overview";
@@ -23,7 +24,7 @@ type Props = {
   onRestoreProject?: (p: Project) => void;
 };
 
-const DRAG_TYPE = "text/task-id";
+const DRAG_TYPE = "text/task-id";   // = DRAG_TASK в dnd.ts
 const TOP = 5;
 
 type TaskMenu = { task: Task; projectId: number | "none" | undefined; anchor: MiniAnchor; move?: boolean };   // move — второй шаг «Перенести в проект…»
@@ -35,11 +36,14 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
   const allProjects = useMemo(() => store.projects.filter((p) => p.direction_id === direction.id), [store.projects, direction.id]);
   const archivedProjects = allProjects.filter((p) => p.status === "archived");
   const archivedIds = new Set(archivedProjects.map((p) => p.id));
+  // v1.6: если порядок расставлен руками (перетаскиванием) — держимся его; иначе прежняя сортировка по шкале внимания
+  const manualOrder = allProjects.some((p) => (p.sort_order ?? 0) > 0);
   const projects = useMemo(
     () => allProjects.filter((p) => p.status !== "archived")
       .map((p) => ({ project: p, report: buildReport({ ...direction, status: p.status }, tasks.filter((t) => t.project_id === p.id)) }))
-      .sort((a, b) => (a.project.status === "paused" ? 1 : 0) - (b.project.status === "paused" ? 1 : 0) || b.report.score - a.report.score),
-    [allProjects, direction, tasks],
+      .sort((a, b) => (a.project.status === "paused" ? 1 : 0) - (b.project.status === "paused" ? 1 : 0)
+        || (manualOrder ? (a.project.sort_order ?? 0) - (b.project.sort_order ?? 0) || a.project.id - b.project.id : b.report.score - a.report.score)),
+    [allProjects, direction, tasks, manualOrder],
   );
   // «Без проекта» — и задачи, чей проект в корзине (id нет в списке проектов)
   const loose = tasks.filter((t) => !t.project_id || !store.projects.some((p) => p.id === t.project_id));
@@ -69,6 +73,8 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
       store.patchTask(await put<Task>(`/tasks/${t.id}`, { ...toIn(t, projectId), updated_at: t.updated_at }));   // С10: с версией
     } catch (e) { store.patchTask(t); store.setError(errorText(e)); void store.reloadTasks(); } finally { setMoving(null); }
   }
+  // v1.6: бросили задачу на строку другой задачи — встать перед ней (и переехать в её проект, если он другой)
+  const reorderRow = (movedId: number, before: Task) => { void dropTaskOnTask(store, movedId, before); };
   const canDrop = (projectId: number | null) => editable && (projectId === null || canEdit(store.projects.find((p) => p.id === projectId)?.access));
   const openTaskMenu = (projectId: number | "none" | undefined) => (t: Task, e: React.MouseEvent) => setTaskMenu({ task: t, projectId, anchor: miniAnchor(e) });
 
@@ -117,7 +123,8 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
           {projects.map(({ project, report }) => (
             <ProjectCard key={project.id} p={project} r={report} color={projColor(project, store.directions)}
               onOpen={() => onOpenBoard(project.id)} onTask={(id) => onOpenTask(project.id, id)} onMenu={(e) => onProjectMenu(project, e)} onTaskMenu={openTaskMenu(project.id)}
-              dropTarget={canDrop(project.id) ? project.id : undefined} onDropTask={(id) => moveTask(id, project.id)} dragEnabled={editable} movingId={moving} />
+              dropTarget={canDrop(project.id) ? project.id : undefined} onDropTask={(id) => moveTask(id, project.id)} dragEnabled={editable} movingId={moving} onReorder={reorderRow}
+              onDropProject={(id) => void dropProjectOnProject(store, id, project)} />
           ))}
           <DropCard className={`ov-card loose ${loose.length === 0 ? "empty" : ""}`} style={{ ["--dir" as string]: color }}
             enabled={canDrop(null)} onDropTask={(id) => moveTask(id, null)} onContextMenu={(e) => setLooseMenu(miniAnchor(e))}>
@@ -131,7 +138,7 @@ export default function DirectionPage({ store, direction, onOpenBoard, onOpenTas
             </header>
             <p className="ov-goal">Задачи направления, не привязанные к проекту.{editable && projects.length > 0 && " Перетащите задачу на проект, чтобы перенести."}</p>
             {looseOpen.length > 0 ? (
-              <TaskList tasks={[...looseOpen].sort((a, b) => a.priority - b.priority)} onTask={(id) => onOpenTask("none", id)} onBoard={() => onOpenBoard("none")} onTaskMenu={openTaskMenu("none")} dragEnabled={editable} movingId={moving} />
+              <TaskList tasks={[...looseOpen].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.priority - b.priority)} onTask={(id) => onOpenTask("none", id)} onBoard={() => onOpenBoard("none")} onTaskMenu={openTaskMenu("none")} dragEnabled={editable} movingId={moving} onReorder={reorderRow} />
             ) : (
               <p className="ov-empty">{loose.length ? "Все закрыты." : "Пусто — сюда попадают задачи без проекта."}</p>
             )}
@@ -210,20 +217,29 @@ function DropCard({ enabled, onDropTask, className, children, ...rest }: { enabl
   );
 }
 
-function ProjectCard({ p, r, color, onOpen, onTask, onMenu, onTaskMenu, dropTarget, onDropTask, dragEnabled, movingId }: {
+function ProjectCard({ p, r, color, onOpen, onTask, onMenu, onTaskMenu, dropTarget, onDropTask, dragEnabled, movingId, onReorder, onDropProject }: {
   p: Project; r: ReturnType<typeof buildReport>; color: string; onOpen: () => void; onTask: (id: number) => void; onMenu: (e: React.MouseEvent) => void;
   onTaskMenu: (t: Task, e: React.MouseEvent) => void;
   dropTarget?: number; onDropTask: (taskId: number) => void; dragEnabled: boolean; movingId: number | null;
+  onReorder?: (movedId: number, before: Task) => void;
+  onDropProject?: (projectId: number) => void;   // v1.6: карточки проектов переставляются перетаскиванием
 }) {
   const total = r.tasks.length;
   const pct = (n: number) => (total ? (n / total) * 100 : 0);
   const paused = p.status === "paused";
-  const sorted = [...r.open].sort((a, b) => a.priority - b.priority || (a.deadline || "9").localeCompare(b.deadline || "9"));
+  const [over, setOver] = useState(false);
+  const canOrder = dragEnabled && canEdit(p.access) && !!onDropProject;
+  const sorted = [...r.open].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.priority - b.priority || (a.deadline || "9").localeCompare(b.deadline || "9"));
   return (
-    <DropCard className={`ov-card proj-card ${paused ? "paused" : ""} state-${r.level.key}`} style={{ ["--dir" as string]: color }}
-      enabled={dropTarget !== undefined} onDropTask={onDropTask} onContextMenu={(e) => { e.stopPropagation(); onMenu(e); }}>
+    <DropCard className={`ov-card proj-card ${paused ? "paused" : ""} state-${r.level.key} ${over ? "drop-before" : ""}`} style={{ ["--dir" as string]: color }}
+      enabled={dropTarget !== undefined} onDropTask={onDropTask} onContextMenu={(e) => { e.stopPropagation(); onMenu(e); }}
+      draggable={canOrder}
+      onDragStart={(e) => { if (!canOrder) return; e.dataTransfer.setData(DRAG_PROJECT, String(p.id)); e.dataTransfer.effectAllowed = "move"; }}
+      onDragOverCapture={(e) => { if (!canOrder || !hasType(e, DRAG_PROJECT)) return; e.preventDefault(); setOver(true); }}
+      onDragLeaveCapture={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false); }}
+      onDropCapture={(e) => { setOver(false); const id = dragId(e, DRAG_PROJECT); if (canOrder && id && id !== p.id) { e.preventDefault(); onDropProject!(id); } }}>
       <header className="ov-card-head">
-        <button className="ov-name" onClick={onOpen}><span className="swatch" style={{ background: color }} /><span>{p.name}</span></button>
+        <button className="ov-name" onClick={onOpen}>{canOrder && <span className="grip" aria-hidden="true">⋮⋮</span>}<span className="swatch" style={{ background: color }} /><span>{p.name}</span></button>
         <span className={`lvl lvl-${r.level.key}`} title={r.level.hint}>{paused ? "На паузе" : total === 0 ? "Пусто" : r.level.label}</span>
         <button className="more" onClick={onMenu} title="Действия с проектом" aria-label={`Действия: ${p.name}`}>⋯</button>
       </header>
@@ -243,7 +259,7 @@ function ProjectCard({ p, r, color, onOpen, onTask, onMenu, onTaskMenu, dropTarg
       </dl>
       {total > 0 && <p className="ov-reasons">{r.reasons.length ? r.reasons.join(" · ") : "движение есть, сроки соблюдаются"}</p>}
       {sorted.length > 0 ? (
-        <TaskList tasks={sorted} onTask={onTask} onBoard={onOpen} onTaskMenu={onTaskMenu} dragEnabled={dragEnabled} movingId={movingId} />
+        <TaskList tasks={sorted} onTask={onTask} onBoard={onOpen} onTaskMenu={onTaskMenu} dragEnabled={dragEnabled} movingId={movingId} onReorder={onReorder} />
       ) : (
         <p className="ov-empty drop-hint">{total === 0 ? (dropTarget !== undefined ? "Задач нет — перетащите сюда или откройте доску проекта." : "Задач нет — откройте доску проекта и добавьте первую.") : "Все задачи закрыты."}</p>
       )}
@@ -252,29 +268,33 @@ function ProjectCard({ p, r, color, onOpen, onTask, onMenu, onTaskMenu, dropTarg
 }
 
 /** Список открытых задач карточки: первые пять, остальные раскрываются на месте — чтобы любую можно было перетащить. */
-function TaskList({ tasks, onTask, onBoard, onTaskMenu, dragEnabled, movingId }: { tasks: Task[]; onTask: (id: number) => void; onBoard: () => void; onTaskMenu: (t: Task, e: React.MouseEvent) => void; dragEnabled: boolean; movingId: number | null }) {
+function TaskList({ tasks, onTask, onBoard, onTaskMenu, dragEnabled, movingId, onReorder }: { tasks: Task[]; onTask: (id: number) => void; onBoard: () => void; onTaskMenu: (t: Task, e: React.MouseEvent) => void; dragEnabled: boolean; movingId: number | null; onReorder?: (movedId: number, before: Task) => void }) {
   const [all, setAll] = useState(false);
   const shown = all ? tasks : tasks.slice(0, TOP);
   const rest = tasks.length - shown.length;
   return (
     <ul className="ov-tasks">
-      {shown.map((t) => <TaskRow key={t.id} t={t} onClick={() => onTask(t.id)} onMenu={(e) => onTaskMenu(t, e)} draggable={dragEnabled && canEdit(t.access)} moving={movingId === t.id} />)}
+      {shown.map((t) => <TaskRow key={t.id} t={t} onClick={() => onTask(t.id)} onMenu={(e) => onTaskMenu(t, e)} draggable={dragEnabled && canEdit(t.access)} moving={movingId === t.id} onReorder={onReorder} />)}
       {rest > 0 && <li className="more"><button onClick={() => setAll(true)}>ещё {rest} — показать все</button></li>}
       {all && tasks.length > TOP && <li className="more"><button onClick={() => setAll(false)}>свернуть</button> <button onClick={onBoard}>на доску →</button></li>}
     </ul>
   );
 }
 
-function TaskRow({ t, onClick, onMenu, draggable, moving }: { t: Task; onClick: () => void; onMenu: (e: React.MouseEvent) => void; draggable: boolean; moving: boolean }) {
+function TaskRow({ t, onClick, onMenu, draggable, moving, onReorder }: { t: Task; onClick: () => void; onMenu: (e: React.MouseEvent) => void; draggable: boolean; moving: boolean; onReorder?: (movedId: number, before: Task) => void }) {
   const late = t.deadline && isOverdue(`${t.deadline}T23:59:59`);
   const [dragging, setDragging] = useState(false);
+  const [over, setOver] = useState(false);
   const ck = checklistProgress(t.checklist);
   return (
-    <li className={`${dragging ? "dragging" : ""} ${moving ? "moving" : ""}`}
+    <li className={`${dragging ? "dragging" : ""} ${moving ? "moving" : ""} ${over ? "drop-before" : ""}`}
       draggable={draggable}
       onContextMenu={onMenu}
       onDragStart={(e) => { e.dataTransfer.setData(DRAG_TYPE, String(t.id)); e.dataTransfer.effectAllowed = "move"; setDragging(true); }}
-      onDragEnd={() => setDragging(false)}>
+      onDragEnd={() => { setDragging(false); setOver(false); }}
+      onDragOver={(e) => { if (!onReorder || !e.dataTransfer.types.includes(DRAG_TYPE)) return; e.preventDefault(); e.stopPropagation(); setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => { setOver(false); const id = Number(e.dataTransfer.getData(DRAG_TYPE)); if (onReorder && id && id !== t.id) { e.preventDefault(); e.stopPropagation(); onReorder(id, t); } }}>
       <button onClick={onClick} title={draggable ? "Открыть · перетащите на другой проект, чтобы перенести" : undefined}>
         {draggable && <span className="grip" aria-hidden="true">⋮⋮</span>}
         <span className={`st st-${t.status}`} title={STATUS_LABEL[t.status]} />

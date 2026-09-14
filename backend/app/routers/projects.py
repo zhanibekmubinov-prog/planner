@@ -7,7 +7,7 @@ from ..auth import current_user
 from ..crud import log
 from ..db import get_db
 from ..scope import (OWNER, WRITE, _best, direction_access, get_direction_editable, get_owned, get_project_editable, get_project_visible,
-                     stamp, visible_projects)
+                     project_access, stamp, visible_projects)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -61,6 +61,20 @@ def access_preview(id: int, direction_id: int, db: Session = Depends(get_db), us
         u = db.get(models.User, uid)
         if u: out.append(schemas.AccessPreviewRow(user=u, permission=perm, keeps_access=_keeps_access(db, p, uid, new_dir)))
     return out
+
+
+@router.post("/reorder", response_model=list[schemas.ProjectOut])
+def reorder(data: schemas.ReorderIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
+    """v1.6: новый порядок проектов после перетаскивания. Переставляем только те, что доступны на правку;
+    недоступные и чужие id молча пропускаем — перетаскивание не должно падать из-за одной строки."""
+    n = 0
+    for pid in data.ids:
+        p = db.get(models.Project, pid)
+        if p is None or p.deleted_at is not None or project_access(db, user, p) not in WRITE:
+            continue
+        p.sort_order = n; n += 1
+    db.commit()
+    return visible_projects(db, user)
 
 
 @router.post("", response_model=schemas.ProjectOut, status_code=201)

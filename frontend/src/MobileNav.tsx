@@ -36,7 +36,9 @@ export default function MobileNav(props: Props) {
           <div className="sheet" role="dialog" aria-modal="true" aria-label="Разделы и направления">
             <div className="sheet-grip" aria-hidden="true" />
             <Sidebar {...props} onView={go} onNewDirection={() => { close(); props.onNewDirection(); }} onNewProject={(d) => { close(); props.onNewProject(d); }}
-              onProfile={() => { close(); props.onProfile(); }} />
+              onProfile={() => { close(); props.onProfile(); }}
+              onOpenTask={props.onOpenTask && ((t) => { close(); props.onOpenTask!(t); })}
+              onMoveProject={props.onMoveProject && ((p, to) => { close(); props.onMoveProject!(p, to); })} />
             <button className="sheet-close btn" onClick={close}>Закрыть</button>
           </div>
         </div>

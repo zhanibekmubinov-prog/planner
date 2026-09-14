@@ -28,7 +28,8 @@ export function makeStore(over: Partial<Store> = {}): Store {
     loading: false, error: null,
     reload: noop(), reloadTasks: noop(), reloadDirections: noop(), reloadProjects: noop(), reloadShared: noop(),
     reloadPeople: noop(), reloadTools: noop(), reloadMindmaps: noop(), reloadTrash: noop(), reloadMe: noop(),
-    setMe: vi.fn(), patchMindmap: vi.fn(), patchTask: vi.fn(), setError: vi.fn(),
+    setMe: vi.fn(), patchMindmap: vi.fn(), patchTask: vi.fn(), patchProject: vi.fn(),
+    setTasks: vi.fn(), setProjects: vi.fn(), setError: vi.fn(),
     ...over,
   };
 }

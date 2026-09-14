@@ -147,6 +147,15 @@ class ProjectOut(ORM):
     owner: UserBrief | None = None
     access: str | None = None
     deleted_at: datetime | None = None
+    sort_order: int = 0        # v1.6: ручной порядок в направлении
+
+
+class ReorderIn(BaseModel):
+    """v1.6: новый порядок списка после перетаскивания — id в нужном порядке.
+    Чужие и недоступные id молча пропускаются, порядок остальных сохраняется."""
+    ids: list[int] = Field(default_factory=list, max_length=500)
+
+    _dedupe_ids = field_validator("ids")(classmethod(lambda cls, v: dedupe(v)))
 
 
 class AccessPreviewRow(BaseModel):
@@ -231,6 +240,17 @@ class TaskIn(BaseModel):
             raise ValueError("В чеклисте повторяются id пунктов")
         return v
 
+class TaskAssignee(BaseModel):
+    """v1.6: ответственный по задаче (строка поручения) — чтобы списки и Action Tracker
+    показывали «кто отвечает» без отдельного запроса за поручениями."""
+    delegation_id: int
+    person_id: int
+    name: str
+    status: DelegationStatus = DelegationStatus.open
+    check_at: datetime | None = None
+    comment: str | None = None
+
+
 class TaskOut(ORM):
     id: int
     title: str
@@ -250,6 +270,8 @@ class TaskOut(ORM):
     access: str | None = None          # owner | edit | view | assignee
     assigned_to_me: bool = False
     deleted_at: datetime | None = None
+    sort_order: int = 0                # v1.6: ручной порядок внутри проекта / направления
+    assignees: list[TaskAssignee] = [] # v1.6: ответственные (из поручений)
 
 
 class TrashOut(BaseModel):

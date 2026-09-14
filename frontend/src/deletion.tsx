@@ -25,8 +25,9 @@ export function useDeletion(store: Store) {
     const impact = await impactOf(`/directions/${d.id}/impact`, {
       projects: store.projects.filter((p) => p.direction_id === d.id).length, tasks: mine.length, open_tasks: mine.filter((t) => t.status !== "done").length, shares: 0,
     });
+    // v1.6: задачи уходят в корзину вместе с направлением; остаются только те, что числятся ещё в одном живом направлении
     const what = impact.tasks > 0
-      ? `Вместе с ним в корзину уйдут ${nProjects(impact.projects)}. ${impact.tasks === 1 ? "Задача останется" : `${nTasks(impact.tasks)} останутся`} в разделе «Без направления».`
+      ? `Вместе с ним в корзину уйдут ${nProjects(impact.projects)} и ${impact.tasks === 1 ? "задача" : nTasks(impact.tasks)}. Задачи, которые числятся ещё в одном направлении, останутся там.`
       : impact.projects > 0 ? `Вместе с ним в корзину уйдут ${nProjects(impact.projects)}. Задач в нём нет.` : "Задач и проектов в нём нет.";
     const ok = await confirm(`Направление «${d.name}» отправится в корзину. ${what}${sharesNote(impact.shares)}`, {
       title: "Удалить направление?", danger: true, okLabel: "Удалить направление",
@@ -41,7 +42,8 @@ export function useDeletion(store: Store) {
   async function deleteProject(p: Project): Promise<boolean> {
     const mine = store.tasks.filter((t) => t.project_id === p.id);
     const impact = await impactOf(`/projects/${p.id}/impact`, { projects: 0, tasks: mine.length, open_tasks: mine.filter((t) => t.status !== "done").length, shares: 0 });
-    const what = impact.tasks > 0 ? `${impact.tasks === 1 ? "Задача останется" : `${nTasks(impact.tasks)} останутся`} в направлении — без проекта.` : "Задач в нём нет.";
+    // v1.6: задачи проекта уходят в корзину вместе с ним и возвращаются вместе с ним же
+    const what = impact.tasks > 0 ? `${impact.tasks === 1 ? "Его задача уйдёт" : `Его ${nTasks(impact.tasks)} уйдут`} в корзину вместе с ним — и вернутся вместе с ним.` : "Задач в нём нет.";
     const ok = await confirm(`Проект «${p.name}» отправится в корзину. ${what}${sharesNote(impact.shares)}`, {
       title: "Удалить проект?", danger: true, okLabel: "Удалить проект",
       typeToConfirm: impact.tasks > 0 ? p.name : undefined,

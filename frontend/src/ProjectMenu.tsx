@@ -82,9 +82,10 @@ export default function ProjectMenu({ store, anchor, onClose, onOpen, onEdit, on
 }
 
 /** Окно создания / изменения проекта. При смене направления — блок «Перенос» (владелец, решение 2). */
-export function ProjectModal({ store, direction, project, onClose, onSaved }: { store: Store; direction: Direction; project: Project | null; onClose: () => void; onSaved: (p: Project) => void }) {
+export function ProjectModal({ store, direction, project, toDirectionId, onClose, onSaved }: { store: Store; direction: Direction; project: Project | null; toDirectionId?: number; onClose: () => void; onSaved: (p: Project) => void }) {
   const initial: ProjectIn = project ? projectBody(project) : { direction_id: direction.id, name: "", description: null, goal: null, color: null, status: "active" };
-  const [draft, setDraft] = useState<ProjectIn>(initial);
+  // v1.6: проект перетащили на другое направление — окно открывается сразу с ним, дальше обычный блок «Перенос»
+  const [draft, setDraft] = useState<ProjectIn>(toDirectionId && project ? { ...initial, direction_id: toDirectionId } : initial);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [moveMode, setMoveMode] = useState<MoveMode>("move");

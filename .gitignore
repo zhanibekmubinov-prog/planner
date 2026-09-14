@@ -9,3 +9,6 @@ _mcp_test.db
 _*.db
 _*.tgz
 Claude outputs/
+
+planner.bundle
+*.patch

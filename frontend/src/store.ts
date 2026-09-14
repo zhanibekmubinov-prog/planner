@@ -20,6 +20,9 @@ export type Store = {
   setMe: (u: User) => void;
   patchMindmap: (m: MindMap) => void;
   patchTask: (t: Task) => void;
+  patchProject: (p: Project) => void;      // v1.6: оптимистичная правка проекта (порядок при перетаскивании)
+  setTasks: (ts: Task[]) => void;          // v1.6: принять список целиком (ответ /tasks/reorder)
+  setProjects: (ps: Project[]) => void;    // v1.6: то же для проектов
   setError: (e: string | null) => void;
 };
 
@@ -64,6 +67,10 @@ export function useStore(): Store {
   useEffect(() => { void reload(); }, [reload]);
 
   const patchTask = useCallback((t: Task) => setAllTasks((prev) => prev.map((x) => (x.id === t.id ? t : x))), []);
+  const patchProject = useCallback((p: Project) => setProjects((prev) => prev.map((x) => (x.id === p.id ? p : x))), []);
+  // Ответ /reorder — это полный видимый список: кладём его как есть, чтобы порядок совпал с серверным
+  const setTasksList = useCallback((ts: Task[]) => setAllTasks(ts), []);
+  const setProjectsList = useCallback((ps: Project[]) => setProjects(ps), []);
   // На доске — мои задачи и те, что мне открыли (общие); порученные мне другими — во «входящих» (могут быть и там, и там)
   // порученная мне задача попадает и на доску, если она лежит в открытом мне направлении/проекте
   const sharedDirs = new Set(directions.filter((d) => d.access === "edit" || d.access === "view").map((d) => d.id));
@@ -73,5 +80,5 @@ export function useStore(): Store {
   const inbox = allTasks.filter((t) => me && t.owner && t.owner.id !== me.id && (t.assigned_to_me || t.access === "assignee"));
   const patchMindmap = useCallback((m: MindMap) => setMindmaps((prev) => prev.map((x) => (x.id === m.id ? m : x))), []);
 
-  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, trash, loading, error, reload, refresh, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchMindmap, setError };
+  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, trash, loading, error, reload, refresh, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchProject, setTasks: setTasksList, setProjects: setProjectsList, patchMindmap, setError };
 }

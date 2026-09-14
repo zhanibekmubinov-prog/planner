@@ -31,37 +31,70 @@ def drop_shares(db: Session, entity_type: str, ids: list[int]) -> None:
 
 # ── В корзину ────────────────────────────────────────────────────────────────
 
-def soft_delete_task(db: Session, t: models.Task) -> None:
-    t.deleted_at = _now(); drop_shares(db, "task", [t.id]); log(db, t, "trash")
+def soft_delete_task(db: Session, t: models.Task, ts: datetime | None = None) -> None:
+    t.deleted_at = ts or _now(); drop_shares(db, "task", [t.id]); log(db, t, "trash")
 
 
 def soft_delete_project(db: Session, p: models.Project, ts: datetime | None = None) -> None:
-    p.deleted_at = ts or _now(); drop_shares(db, "project", [p.id]); log(db, p, "trash")
+    """v1.6 (решение владельца 2026-09-14): задачи проекта уходят в корзину ВМЕСТЕ с ним, одним timestamp.
+    Раньше они оставались живыми и всплывали в «Все задачи» как «без проекта» — это и было симптомом."""
+    ts = ts or _now()
+    for t in list(p.tasks):        # только живые (см. Project.tasks в models.py)
+        soft_delete_task(db, t, ts)
+    p.deleted_at = ts; drop_shares(db, "project", [p.id]); log(db, p, "trash")
 
 
 def soft_delete_direction(db: Session, d: models.Direction) -> None:
-    """Направление и все его живые проекты — одним timestamp (по нему restore направления вернёт проекты)."""
+    """Направление, его живые проекты и задачи — одним timestamp (по нему restore вернёт всё разом).
+
+    Задача уходит в корзину вместе с направлением, только если больше нигде не живёт: если она числится
+    ещё в одном живом направлении, она там и остаётся (задачи кросс-направленческие).
+    """
     ts = _now()
     for p in list(d.projects):
         soft_delete_project(db, p, ts)
+    for t in list(d.tasks):        # только живые задачи этого направления
+        if t.deleted_at is not None:
+            continue               # уже ушла вместе со своим проектом
+        if any(x.id != d.id for x in t.directions):
+            continue               # живёт ещё в одном направлении — остаётся там
+        soft_delete_task(db, t, ts)
     d.deleted_at = ts; drop_shares(db, "direction", [d.id]); log(db, d, "trash")
 
 
 # ── Восстановление ───────────────────────────────────────────────────────────
 
+def _restore_tasks_deleted_with(db: Session, ts: datetime | None, ids: list[int]) -> int:
+    """Вернуть из корзины задачи, ушедшие туда тем же действием (тот же timestamp)."""
+    if ts is None or not ids:
+        return 0
+    rows = db.scalars(select(models.Task).where(models.Task.id.in_(ids), models.Task.deleted_at == ts)).all()
+    for t in rows:
+        t.deleted_at = None
+    return len(rows)
+
+
 def restore_direction(db: Session, d: models.Direction) -> None:
+    """Возвращает направление вместе с проектами и задачами, удалёнными тем же действием."""
     ts = d.deleted_at
     d.deleted_at = None
+    task_ids = set(db.scalars(select(models.task_directions.c.task_id).where(models.task_directions.c.direction_id == d.id)).all())
     for p in d.all_projects:
         if p.deleted_at is not None and p.deleted_at == ts:
             p.deleted_at = None
+            task_ids |= set(db.scalars(select(models.Task.id).where(models.Task.project_id == p.id)).all())
+    _restore_tasks_deleted_with(db, ts, list(task_ids))
     log(db, d, "restore")
 
 
 def restore_project(db: Session, p: models.Project) -> None:
+    """Возвращает проект вместе с задачами, ушедшими в корзину тем же действием."""
     if p.direction is not None and p.direction.deleted_at is not None:
         raise HTTPException(409, f"Сначала восстановите направление «{p.direction.name}»")
-    p.deleted_at = None; log(db, p, "restore")
+    ts = p.deleted_at
+    p.deleted_at = None
+    _restore_tasks_deleted_with(db, ts, list(db.scalars(select(models.Task.id).where(models.Task.project_id == p.id)).all()))
+    log(db, p, "restore")
 
 
 # ── Навсегда ─────────────────────────────────────────────────────────────────
@@ -72,17 +105,33 @@ def hard_delete_task(db: Session, t: models.Task) -> None:
     db.delete(t)   # напоминания/поручения/майндмапы — каскадом
 
 
+def _hard_delete_tasks_deleted_with(db: Session, ts: datetime | None, ids: list[int]) -> None:
+    """v1.6: задачи, ушедшие в корзину вместе с контейнером, стираются вместе с ним же —
+    иначе после «удалить навсегда» они остались бы в корзине висячими строками."""
+    if ts is None or not ids:
+        return
+    for t in db.scalars(select(models.Task).where(models.Task.id.in_(ids), models.Task.deleted_at == ts)).all():
+        hard_delete_task(db, t)
+    db.flush()
+
+
 def hard_delete_project(db: Session, p: models.Project) -> None:
-    """Задачи остаются (project_id → NULL), удаляется только сам проект."""
+    """Задачи, удалённые вместе с проектом, стираются; остальные остаются (project_id → NULL)."""
     drop_shares(db, "project", [p.id])
+    _hard_delete_tasks_deleted_with(db, p.deleted_at, list(db.scalars(select(models.Task.id).where(models.Task.project_id == p.id)).all()))
     db.execute(update(models.Task).where(models.Task.project_id == p.id).values(project_id=None))
     db.delete(p)
 
 
 def hard_delete_direction(db: Session, d: models.Direction) -> None:
-    """Проекты направления удаляются (задачи теряют project_id), связи task_directions — каскадом; сами задачи остаются."""
+    """Проекты направления удаляются, задачи, ушедшие в корзину вместе с направлением, — тоже;
+    остальные задачи остаются (теряют project_id), связи task_directions — каскадом."""
     pids = [p.id for p in d.all_projects]
     drop_shares(db, "direction", [d.id]); drop_shares(db, "project", pids)
+    ids = set(db.scalars(select(models.task_directions.c.task_id).where(models.task_directions.c.direction_id == d.id)).all())
+    if pids:
+        ids |= set(db.scalars(select(models.Task.id).where(models.Task.project_id.in_(pids))).all())
+    _hard_delete_tasks_deleted_with(db, d.deleted_at, list(ids))
     if pids:
         db.execute(update(models.Task).where(models.Task.project_id.in_(pids)).values(project_id=None))
     db.execute(delete(models.task_directions).where(models.task_directions.c.direction_id == d.id))

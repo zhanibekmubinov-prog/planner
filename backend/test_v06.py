@@ -98,11 +98,15 @@ ok(c.delete(f"/api/shares/{sh['id']}", headers=H(N)), 204)   # приглашё�
 assert ok(c.get("/api/tasks", headers=H(N))) == []
 assert ok(c.get("/api/directions", headers=H(N))) == []
 
-# --- удаление проекта (v0.8: в корзину, затем навсегда): задачи остаются в направлении ---
+# --- удаление проекта (v1.6: в корзину вместе с задачами, возврат — вместе с ними же) ---
 ok(c.delete(f"/api/projects/{p_main['id']}", headers=H(J)), 204)
 assert p_main["id"] not in [p["id"] for p in ok(c.get("/api/projects", headers=H(J)))]
+assert c.get(f"/api/tasks/{t1['id']}", headers=H(J)).status_code == 404, "задача из корзины нигде не видна"
+ok(c.post(f"/api/projects/{p_main['id']}/restore", json={}, headers=H(J)))
+t1_after = ok(c.get(f"/api/tasks/{t1['id']}", headers=H(J))); assert t1_after["project_id"] == p_main["id"] and t1_after["directions"][0]["id"] == emba["id"]
+ok(c.delete(f"/api/projects/{p_main['id']}", headers=H(J)), 204)
 ok(c.delete(f"/api/trash/project/{p_main['id']}", headers=H(J)), 204)
-t1_after = ok(c.get(f"/api/tasks/{t1['id']}", headers=H(J))); assert t1_after["project_id"] is None and t1_after["directions"][0]["id"] == emba["id"]
+assert c.get(f"/api/tasks/{t1['id']}", headers=H(J)).status_code == 404
 
 # --- MCP: проекты через Claude ---
 import json

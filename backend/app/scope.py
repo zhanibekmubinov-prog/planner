@@ -17,7 +17,7 @@ v0.8 — корзина (soft-delete): у Direction/Project/Task есть `delet
 """
 from fastapi import HTTPException
 from sqlalchemy import exists, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from . import models
 
 OWNER, EDIT, VIEW, VIA, ASSIGNEE = "owner", "edit", "view", "via", "assignee"
@@ -147,9 +147,12 @@ def visible_directions(db: Session, user: models.User) -> list[models.Direction]
     return out
 
 
+PROJECT_ORDER = (models.Project.sort_order, models.Project.id)   # v1.6: ручной порядок, затем id
+
+
 def visible_projects(db: Session, user: models.User) -> list[models.Project]:
     g = Grants(db, user)
-    own = db.scalars(select(models.Project).where(models.Project.owner_id == user.id, alive(models.Project)).order_by(models.Project.id)).all()
+    own = db.scalars(select(models.Project).where(models.Project.owner_id == user.id, alive(models.Project)).order_by(*PROJECT_ORDER)).all()
     out = [stamp(p, OWNER) for p in own]
     if g.empty:
         return out
@@ -161,7 +164,7 @@ def visible_projects(db: Session, user: models.User) -> list[models.Project]:
         ids |= set(x for x in db.scalars(select(models.Task.project_id).where(models.Task.id.in_(list(g.task)))).all() if x)
     ids -= seen
     if ids:
-        for p in db.scalars(select(models.Project).where(models.Project.id.in_(list(ids)), alive(models.Project)).order_by(models.Project.id)).all():
+        for p in db.scalars(select(models.Project).where(models.Project.id.in_(list(ids)), alive(models.Project)).order_by(*PROJECT_ORDER)).all():
             acc = project_access(db, user, p, g)
             if acc: out.append(stamp(p, acc))
     return out
@@ -203,7 +206,9 @@ def visible_tasks_query(db: Session, user: models.User):
     if g.direction:
         conds.append(exists().where(models.task_directions.c.task_id == models.Task.id,
                                     models.task_directions.c.direction_id.in_(list(g.direction))))
-    return select(models.Task).where(alive(models.Task), or_(*conds))
+    # поручения и людей подгружаем сразу: их читает и `assigned_to_me`, и `assignees` (v1.6) у каждой задачи
+    return (select(models.Task).where(alive(models.Task), or_(*conds))
+            .options(selectinload(models.Task.delegations).selectinload(models.Delegation.person)))
 
 
 def stamp_tasks(db: Session, user: models.User, tasks) -> list[models.Task]:

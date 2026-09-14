@@ -79,7 +79,23 @@ def list_(direction_id: int | None = None, project_id: int | None = None, status
     if project_id: q = q.where(models.Task.project_id == project_id)
     if status: q = q.where(models.Task.status == status)
     if orphans: q = q.where(models.Task.owner_id == user.id, orphan_clause())
-    return stamp_tasks(db, user, db.scalars(q.order_by(models.Task.priority, models.Task.deadline)).unique().all())
+    # v1.6: сначала ручной порядок (перетаскивание), затем прежняя сортировка — у нетронутых списков он нулевой
+    return stamp_tasks(db, user, db.scalars(q.order_by(models.Task.sort_order, models.Task.priority, models.Task.deadline)).unique().all())
+
+
+@router.post("/tasks/reorder", response_model=list[schemas.TaskOut])
+def reorder(data: schemas.ReorderIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
+    """v1.6: новый порядок задач после перетаскивания (внутри проекта или направления).
+    Недоступные на правку id молча пропускаем — перетаскивание не должно падать из-за одной строки."""
+    n = 0
+    for tid in data.ids:
+        t = db.get(models.Task, tid)
+        if t is None or t.deleted_at is not None or task_access(db, user, t) not in WRITE:
+            continue
+        t.sort_order = n; n += 1
+    db.commit()
+    q = visible_tasks_query(db, user)
+    return stamp_tasks(db, user, db.scalars(q.order_by(models.Task.sort_order, models.Task.priority, models.Task.deadline)).unique().all())
 
 
 @router.get("/tasks/{id}", response_model=schemas.TaskOut)

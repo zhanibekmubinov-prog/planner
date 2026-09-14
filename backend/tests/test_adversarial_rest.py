@@ -424,21 +424,22 @@ def test_ok_assignee_can_change_status_and_report_only(client, api, db, jack, ai
     assert client.delete(f"/api/delegations/{dl['id']}", headers=aida.h).status_code == 403
 
 
-def test_ok_project_delete_keeps_tasks_in_direction(client, api, jack, nur):
-    """Регрессия (v0.8: soft-delete). Удаление проекта в корзину: задачи остаются в направлении, проект пропадает из
-    списка проектов (project_id у задачи сохраняется для восстановления — фронт трактует неизвестный id как «без проекта»),
-    шары на проект снимаются. После удаления навсегда (DELETE /trash/project/{id}) project_id = None."""
+def test_ok_project_delete_takes_its_tasks_to_trash(client, api, jack, nur):
+    """Регрессия (v1.6, решение владельца 2026-09-14). Удаление проекта в корзину забирает его задачи:
+    в «Все задачи» их больше нет, они лежат в корзине рядом с проектом и возвращаются вместе с ним.
+    Шары на проект снимаются. «Удалить навсегда» стирает проект вместе с этими задачами."""
     d = api.direction(jack, "Д"); p = api.project(jack, d["id"], "П")
     t = api.task(jack, "в проекте", project_id=p["id"])
     api.share(jack, "project", p["id"], NUR_EMAIL, "edit")
     ok(client.delete(f"/api/projects/{p['id']}", headers=jack.h), 204)
-    after = api.get_task(jack, t["id"])
-    assert after["project_id"] in (None, p["id"]) and [x["id"] for x in after["directions"]] == [d["id"]]
+    assert client.get(f"/api/tasks/{t['id']}", headers=jack.h).status_code == 404
+    assert ok(client.get("/api/tasks", headers=jack.h)) == [], "задача из корзины не должна попадать во «Все задачи»"
     assert p["id"] not in [x["id"] for x in ok(client.get("/api/projects", headers=jack.h))]
     assert ok(client.get("/api/tasks", headers=nur.h)) == []
+    tr = ok(client.get("/api/trash", headers=jack.h))
+    assert [x["id"] for x in tr["tasks"]] == [t["id"]] and tr["tasks"][0]["deleted_at"] == tr["projects"][0]["deleted_at"]
     ok(client.delete(f"/api/trash/project/{p['id']}", headers=jack.h), 204)
-    after = api.get_task(jack, t["id"])
-    assert after["project_id"] is None and [x["id"] for x in after["directions"]] == [d["id"]]
+    assert ok(client.get("/api/trash", headers=jack.h)) == {"directions": [], "projects": [], "tasks": []}
 
 
 def test_ok_task_delete_cascades(client, api, db, jack):

@@ -1,10 +1,15 @@
 // Единое хранилище данных: загружает справочники и задачи, отдаёт функции перезагрузки.
 import { useCallback, useEffect, useState } from "react";
 import { api, Direction, errorText, MindMap, Person, Project, SharedWithMe, Task, Tool, TrashOut, User } from "./api";
+import { filterForSpace, Space, useSpace } from "./spaces";
 
 export type Store = {
   me: User | null; directions: Direction[]; projects: Project[]; tasks: Task[]; inbox: Task[]; people: Person[]; tools: Tool[]; mindmaps: MindMap[];
   shared: SharedWithMe[]; trash: TrashOut | null;
+  // v1.7: слой. directions/projects/tasks/mindmaps/trash выше — уже отфильтрованы под него;
+  // inbox («Мне поручено») и shared («Общие») не фильтруются: они всегда рабочие.
+  space: Space; setSpace: (s: Space) => void;
+  spaceCounts: { personal: number; org: number };   // сколько живых направлений в каждом слое — цифра на вкладке
   loading: boolean; error: string | null;
   reload: () => Promise<void>;
   refresh: () => Promise<void>;   // то же, что reload, но без экрана «загрузка…» — данные меняются на месте
@@ -27,6 +32,7 @@ export type Store = {
 };
 
 export function useStore(): Store {
+  const [space, setSpace] = useSpace();
   const [directions, setDirections] = useState<Direction[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [shared, setShared] = useState<SharedWithMe[]>([]);
@@ -80,5 +86,11 @@ export function useStore(): Store {
   const inbox = allTasks.filter((t) => me && t.owner && t.owner.id !== me.id && (t.assigned_to_me || t.access === "assignee"));
   const patchMindmap = useCallback((m: MindMap) => setMindmaps((prev) => prev.map((x) => (x.id === m.id ? m : x))), []);
 
-  return { me, directions, projects, tasks, inbox, people, tools, mindmaps, shared, trash, loading, error, reload, refresh, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchProject, setTasks: setTasksList, setProjects: setProjectsList, patchMindmap, setError };
+  // v1.7: единственное место, где применяется слой — дальше все экраны получают уже готовые списки
+  const inSpace = filterForSpace(space, { directions, projects, tasks, mindmaps, trash });
+  const live = directions.filter((d) => d.status !== "archived");
+  const spaceCounts = { personal: live.filter((d) => d.space !== "org").length, org: live.filter((d) => d.space === "org").length };
+
+  return { me, directions: inSpace.directions, projects: inSpace.projects, tasks: inSpace.tasks, inbox, people, tools,
+    mindmaps: inSpace.mindmaps, shared, trash: inSpace.trash, space, setSpace, spaceCounts, loading, error, reload, refresh, reloadTasks, reloadDirections, reloadProjects, reloadShared, reloadPeople, reloadTools, reloadMindmaps, reloadTrash, reloadMe, setMe, patchTask, patchProject, setTasks: setTasksList, setProjects: setProjectsList, patchMindmap, setError };
 }

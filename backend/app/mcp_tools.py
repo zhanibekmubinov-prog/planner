@@ -452,7 +452,9 @@ def task_full(t: models.Task) -> dict:
 
 
 def direction_brief(d: models.Direction) -> dict:
-    out = {"id": d.id, "name": d.name, "status": d.status.value, "status_ru": DIR_STATUS_RU[d.status.value], "goal": d.goal, "color": d.color}
+    out = {"id": d.id, "name": d.name, "status": d.status.value, "status_ru": DIR_STATUS_RU[d.status.value], "goal": d.goal, "color": d.color,
+           # v1.7: слой — personal («Личное») | org («Организация»)
+           "space": d.space, "space_ru": "Организация" if d.space == "org" else "Личное"}
     acc = getattr(d, "access", None)
     if acc and acc != OWNER:
         out["shared_by"] = d.owner.name if d.owner else None; out["access"] = acc
@@ -500,9 +502,32 @@ def t_get_overview(db, user, a):
 
 def t_list_directions(db, user, a):
     dirs = my_directions(db, user, include_archived=bool(a.get("include_archived")))
+    space = a.get("space")
+    if space in ("personal", "org"):
+        dirs = [d for d in dirs if (d.space or "personal") == space]
     tasks = visible_tasks(db, user)
     now = _now()
     return {"directions": [report_out(digest.build_report(d, tasks, now)) for d in dirs]}
+
+
+def t_move_direction_space(db, user, a):
+    """v1.7: перенести направление между слоями. Это правка свойства, а не удаление, —
+    правилу «удалений через Claude нет» не противоречит. Доступ коллег отсюда НЕ снимаем:
+    это решение владелец принимает в окне планнера, видя список тех, кто видит направление."""
+    d = resolve_direction(db, user, a.get("direction"))
+    if d.owner_id != user.id:
+        return {"isError": True, "error": f"«{d.name}» не ваше направление",
+                "hint": "Переносить между слоями может только владелец направления"}
+    space = (a.get("space") or "").strip()
+    if space not in ("personal", "org"):
+        return {"isError": True, "error": f"Неизвестный слой: {space or 'пусто'}",
+                "hint": "space: personal (Личное) | org (Организация)"}
+    d.space = space
+    d.space_pinned = True
+    db.commit()
+    return {"ok": True, "direction": direction_brief(d),
+            "note": "Слой закреплён — направление больше не будет переезжать само при выдаче доступа или поручении."
+                    + (" Доступ коллег не изменился: закрыть его можно в планнере." if space == "personal" else "")}
 
 
 def t_get_direction_summary(db, user, a):
@@ -1483,7 +1508,15 @@ TOOLS: list[dict] = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "list_directions", "handler": t_list_directions,
      "description": "Список направлений пользователя со статистикой задач и шкалой внимания.",
-     "inputSchema": {"type": "object", "properties": {"include_archived": _b("включить архивные (по умолчанию нет)")}}},
+     "inputSchema": {"type": "object", "properties": {"include_archived": _b("включить архивные (по умолчанию нет)"),
+                                                     "space": _s("слой: personal (Личное) | org (Организация); не указан — оба", enum=["personal", "org"])}}},
+    {"name": "move_direction_space", "handler": t_move_direction_space,
+     "description": "Перенести направление между слоями «Личное» и «Организация» («перенеси Эмбу в личное»). Доступ коллег не меняется — "
+                    "закрыть его можно только в планнере. После переноса слой закрепляется и больше не меняется сам.",
+     "inputSchema": {"type": "object", "properties": {
+         "direction": _s(f"направление: {REF}"),
+         "space": _s("personal (Личное) | org (Организация)", enum=["personal", "org"])},
+         "required": ["direction", "space"]}},
     {"name": "get_direction_summary", "handler": t_get_direction_summary,
      "description": "Подробная сводка по одному направлению: шкала внимания и причины, задачи по статусам, кто задействован, тулы.",
      "inputSchema": {"type": "object", "properties": {"direction": _s(f"направление: {REF}"), "include_done": _b("включить выполненные задачи (по умолчанию да)")},

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from .. import models, schemas
+from .. import models, schemas, spaces
 from ..auth import current_user, require_admin
 from ..config import settings
 from ..crud import get_or_404, log
@@ -100,7 +100,10 @@ def deleg_list(mine: bool = False, db: Session = Depends(get_db), user: models.U
 @delegations.post("", response_model=schemas.DelegationOut, status_code=201)
 def deleg_create(data: schemas.DelegationIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
     get_task_editable(db, user, data.task_id); get_or_404(db, models.Person, data.person_id)
-    obj = models.Delegation(**data.model_dump()); db.add(obj); db.flush(); log(db, obj, "create"); db.commit(); return obj
+    obj = models.Delegation(**data.model_dump()); db.add(obj); db.flush(); log(db, obj, "create")
+    # v1.7: поручение другому человеку переводит непришпиленное направление в «Организацию»
+    names = [d.name for d in spaces.auto_org(db, "task", data.task_id)]
+    db.commit(); obj.space_moved = names; return obj
 
 def _changed(old: datetime | None, new: datetime | None) -> bool:
     def utc(dt): return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)

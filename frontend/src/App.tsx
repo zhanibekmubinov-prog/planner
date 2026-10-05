@@ -7,6 +7,8 @@ import ArchivePage from "./Archive";
 import Board from "./Board";
 import DirectionModal from "./DirectionModal";
 import DirectionMenu, { anchorFromEvent, MenuAnchor, RenameModal } from "./DirectionMenu";
+import SpaceModal from "./SpaceModal";
+import { spaceOf } from "./spaces";
 import DirectionPage from "./DirectionPage";
 import { PeoplePage, ToolsPage } from "./Registry";
 import MindMapEditor from "./MindMapEditor";
@@ -43,6 +45,7 @@ function Workspace() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [dirModal, setDirModal] = useState<{ open: boolean; direction: Direction | null }>({ open: false, direction: null });
   const [menu, setMenu] = useState<MenuAnchor | null>(null);            // контекстное меню направления
+  const [spaceMove, setSpaceMove] = useState<Direction | null>(null);   // v1.7: окно переноса между слоями
   const [pmenu, setPmenu] = useState<ProjectAnchor | null>(null);       // контекстное меню проекта
   const [renaming, setRenaming] = useState<Direction | null>(null);
   const [prenaming, setPrenaming] = useState<Project | null>(null);
@@ -116,6 +119,7 @@ function Workspace() {
 
   const navProps: SidebarProps = {
     directions: store.directions, projects: store.projects, tasks: store.tasks, view, mindmapCount: store.mindmaps.length,
+    space: store.space, onSpace: store.setSpace, personalCount: store.spaceCounts.personal, orgCount: store.spaceCounts.org,
     inboxCount: store.inbox.filter((t) => t.status !== "done").length, sharedCount: sharedOpen, me: store.me, onProfile: () => setProfile(true),
     trashCount: store.trash ? store.trash.directions.length + store.trash.projects.length + store.trash.tasks.length : 0,
     onView: (v) => { setView(v); if (v.kind !== "board") setSelectedId(null); },
@@ -218,6 +222,11 @@ function Workspace() {
 
       {profile && store.me && <ProfileModal store={store} onClose={() => setProfile(false)} />}
 
+      {spaceMove && (
+        <SpaceModal store={store} direction={spaceMove} to={spaceOf(spaceMove) === "org" ? "personal" : "org"}
+          onClose={() => setSpaceMove(null)} />
+      )}
+
       {menu && (
         <DirectionMenu store={store} anchor={menu} onClose={() => setMenu(null)}
           onOpen={(d) => { setView({ kind: "direction", directionId: d.id }); setSelectedId(null); }}
@@ -227,7 +236,8 @@ function Workspace() {
           onMindmaps={(d) => { setView({ kind: "mindmaps", directionId: d.id }); setSelectedId(null); }}
           onEdit={(d) => setDirModal({ open: true, direction: d })}
           onRename={(d) => setRenaming(d)}
-          onDeleted={(d) => { if ((view.kind === "board" || view.kind === "direction") && view.directionId === d.id) setView({ kind: "board", directionId: null }); }} />
+          onDeleted={(d) => { if ((view.kind === "board" || view.kind === "direction") && view.directionId === d.id) setView({ kind: "board", directionId: null }); }}
+          onMoveSpace={(d) => setSpaceMove(d)} />
       )}
       {pmenu && (
         <ProjectMenu store={store} anchor={pmenu} onClose={() => setPmenu(null)}

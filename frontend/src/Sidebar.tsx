@@ -5,6 +5,7 @@ import { UserChip } from "./Account";
 import type { User } from "./api";
 import { canDropTask, DRAG_PROJECT, DRAG_TASK, dragId, dropProjectOnProject, dropTaskOnTask, hasType, moveTaskToProject } from "./dnd";
 import type { Store } from "./store";
+import { Space, SPACE_LABEL } from "./spaces";
 
 export type View =
   | { kind: "overview" }
@@ -17,6 +18,8 @@ export type View =
 export type SidebarProps = {
   directions: Direction[]; projects: Project[]; tasks: Task[]; view: View; mindmapCount: number; inboxCount: number; sharedCount: number;
   trashCount: number;
+  // v1.7: слой. Вкладки стоят под логотипом, над блоком разделов — видны всегда, переключение в один клик.
+  space: Space; onSpace: (s: Space) => void; personalCount: number; orgCount: number;
   me: User | null; onProfile: () => void;
   onView: (v: View) => void; onNewDirection: () => void; onNewProject: (d: Direction) => void;
   onDirectionMenu: (d: Direction, e: React.MouseEvent) => void; onProjectMenu: (p: Project, e: React.MouseEvent) => void;
@@ -34,7 +37,7 @@ const TASKS_SHOWN = 10;   // сколько задач показываем по
 const readOpen = () => { try { return localStorage.getItem(OPEN_KEY) !== "0"; } catch { return true; } };
 const readIds = (key: string): number[] => { try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; } };
 
-export default function Sidebar({ directions, projects, tasks, view, mindmapCount, inboxCount, sharedCount, trashCount, me, onProfile, onView, onNewDirection, onNewProject, onDirectionMenu, onProjectMenu, onOpenTask, store, onMoveProject }: Props) {
+export default function Sidebar({ directions, projects, tasks, view, mindmapCount, inboxCount, sharedCount, trashCount, space, onSpace, personalCount, orgCount, me, onProfile, onView, onNewDirection, onNewProject, onDirectionMenu, onProjectMenu, onOpenTask, store, onMoveProject }: Props) {
   const [open, setOpen] = useState(readOpen);
   const [expanded, setExpanded] = useState<number[]>(() => readIds(EXP_KEY));
   const [expProjects, setExpProjects] = useState<number[]>(() => readIds(EXP_PROJ_KEY));
@@ -146,8 +149,19 @@ export default function Sidebar({ directions, projects, tasks, view, mindmapCoun
 
   return (
     <aside className="side">
-      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v1.6</span></div>
+      <div className="brand"><h1><img className="brand-mark" src="/cis-mark.png" alt="CIS" /><span className="brand-name">Planner</span></h1><span className="ver">v1.7</span></div>
       {me && <UserChip me={me} onClick={onProfile} />}
+
+      <div className="space-tabs" role="tablist" aria-label="Слой">
+        {(["personal", "org"] as Space[]).map((s) => (
+          <button key={s} role="tab" aria-selected={space === s} className={`space-tab ${space === s ? "on" : ""}`}
+            onClick={() => onSpace(s)}
+            title={s === "personal" ? "Мои направления — то, чем никто не занимается кроме меня" : "Рабочее: то, чем я поделился, что открыли мне и что я поручаю"}>
+            {SPACE_LABEL[s]}
+            <span className="n">{s === "personal" ? personalCount : orgCount}</span>
+          </button>
+        ))}
+      </div>
 
       <div className="side-list side-top">
         <button className={`side-item ${view.kind === "overview" ? "active" : ""}`} onClick={() => onView({ kind: "overview" })}>

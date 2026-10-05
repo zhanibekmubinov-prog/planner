@@ -103,6 +103,9 @@ class DirectionIn(BaseModel):
     goal: str | None = None
     color: Color | None = None
     status: DirectionStatus = DirectionStatus.active
+    # v1.7: слой, в котором создаётся направление (фронт шлёт текущий). При изменении направления
+    # поле игнорируется — слой меняется только через PUT /directions/{id}/space.
+    space: Literal["personal", "org"] | None = None
 
 class DirectionOut(ORM):
     id: int
@@ -115,6 +118,27 @@ class DirectionOut(ORM):
     owner: UserBrief | None = None
     access: str | None = None   # owner | edit | view | via (см. scope.py)
     deleted_at: datetime | None = None   # заполнено только в корзине (GET /trash)
+    space: str = "personal"      # v1.7: personal | org
+    space_pinned: bool = False   # слой поставлен руками — автоправило не вмешивается
+
+
+class DirectionSpaceIn(BaseModel):
+    """PUT /directions/{id}/space — перенос направления между слоями."""
+    space: Literal["personal", "org"]
+    # При переносе в «Личное»: снять ли доступ у всех, кто его имеет. Владелец выбирает в окне
+    # (решение 2026-10-05: спрашиваем и показываем, кто видит; молча доступ не снимаем).
+    revoke_shares: bool = False
+
+class SpaceAccessRow(BaseModel):
+    user_id: int
+    name: str
+    email: str
+    permission: str
+    via: str   # direction | project | task — через что открыт доступ
+
+class SpacePreview(BaseModel):
+    """GET /directions/{id}/space-preview — кто увидит направление, если оставить доступ."""
+    people: list[SpaceAccessRow] = []
 
 
 class ProjectIn(BaseModel):
@@ -197,6 +221,9 @@ class ShareOut(ORM):
     permission: str
     user: UserBrief
     created_at: datetime
+    # v1.7: названия направлений, которые этот доступ автоматически перевёл в «Организацию»
+    # — фронт показывает тост «… перешло в Организацию · Отменить»
+    space_moved: list[str] = []
 
 class SharedWithMe(BaseModel):
     """Строка раздела «Общие»: что и кто мне открыл."""
@@ -226,6 +253,8 @@ class TaskIn(BaseModel):
     tool_ids: list[int] = []
     project_id: int | None = None
     checklist: list[ChecklistItem] = []
+    # v1.7: слой для задачи без направлений — фронт шлёт текущий слой при создании
+    space: Literal["personal", "org"] | None = None
     # Версия карточки (С5): если передана и отличается от сохранённой — 409, чтобы автосохранение
     # одного окна не затирало правки другого. Старые клиенты поле не шлют — проверка не выполняется.
     updated_at: datetime | None = None
@@ -272,6 +301,9 @@ class TaskOut(ORM):
     deleted_at: datetime | None = None
     sort_order: int = 0                # v1.6: ручной порядок внутри проекта / направления
     assignees: list[TaskAssignee] = [] # v1.6: ответственные (из поручений)
+    # v1.7: собственный слой задачи. Значим только когда список directions пуст («Без направления») —
+    # иначе слой считается по направлениям (фронт: spaceOfTask в layers/spaces.ts)
+    space: str | None = None
 
 
 class TrashOut(BaseModel):
@@ -324,6 +356,8 @@ class DelegationOut(DelegationBase, ORM):
     notified_at: datetime | None = None
     report: str | None = None
     person: PersonOut
+    # v1.7: направления, которые это поручение автоматически перевело в «Организацию»
+    space_moved: list[str] = []
 
 
 class DelegationReportIn(BaseModel):

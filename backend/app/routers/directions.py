@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from .. import models, schemas, trash
+from .. import models, schemas, spaces, trash
 from ..auth import current_user
 from ..crud import log
 from ..db import get_db
@@ -24,14 +24,19 @@ def impact(id: int, db: Session = Depends(get_db), user: models.User = Depends(c
 
 @router.post("", response_model=schemas.DirectionOut, status_code=201)
 def create(data: schemas.DirectionIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
-    obj = models.Direction(**data.model_dump(), owner_id=user.id)
+    # v1.7: направление рождается в том слое, в котором владелец сейчас работает (фронт шлёт space).
+    # Слой не пришпилен — автоправило ещё может перевести его в «Организацию» при первом доступе.
+    fields = data.model_dump()
+    fields["space"] = fields.get("space") or spaces.PERSONAL
+    obj = models.Direction(**fields, owner_id=user.id)
     db.add(obj); db.flush(); log(db, obj, "create"); db.commit()
     return stamp(obj, OWNER)
 
 @router.put("/{id}", response_model=schemas.DirectionOut)
 def update(id: int, data: schemas.DirectionIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
     obj = get_direction_editable(db, user, id)
-    for k, v in data.model_dump().items(): setattr(obj, k, v)
+    # space здесь не трогаем: слой меняется только через PUT /directions/{id}/space (v1.7)
+    for k, v in data.model_dump(exclude={"space"}).items(): setattr(obj, k, v)
     log(db, obj, "update", {"by": user.id}); db.commit()
     return obj
 
@@ -47,4 +52,29 @@ def restore(id: int, db: Session = Depends(get_db), user: models.User = Depends(
     """Вернуть из корзины вместе с проектами, удалёнными тем же действием. Доступ (шары) не возвращается."""
     obj = get_owned(db, user, models.Direction, id, include_deleted=True)
     trash.restore_direction(db, obj); db.commit()
+    return stamp(obj, OWNER)
+
+
+@router.get("/{id}/space-preview", response_model=schemas.SpacePreview)
+def space_preview(id: int, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
+    """v1.7: кому открыто направление (само, его проекты и задачи) — для окна «Перенести в Личное»."""
+    obj = get_owned(db, user, models.Direction, id)
+    return schemas.SpacePreview(people=spaces.access_preview(db, obj))
+
+
+@router.put("/{id}/space", response_model=schemas.DirectionOut)
+def set_space(id: int, data: schemas.DirectionSpaceIn, db: Session = Depends(get_db), user: models.User = Depends(current_user)):
+    """v1.7: перенести направление между слоями. Перенос всегда пришпиливает слой
+    (`space_pinned`), чтобы автоправило больше не возвращало направление обратно.
+
+    `revoke_shares=true` дополнительно снимает весь доступ — владелец выбирает это в окне,
+    увидев список тех, кто сейчас видит направление. Само по себе «Личное» доступ НЕ закрывает:
+    слой — это удобство раскладки, а не замок.
+    """
+    obj = get_owned(db, user, models.Direction, id)
+    revoked = spaces.revoke_all(db, obj) if (data.space == spaces.PERSONAL and data.revoke_shares) else 0
+    obj.space = data.space
+    obj.space_pinned = True
+    log(db, obj, "space", {"space": data.space, "revoked": revoked, "by": user.id})
+    db.commit()
     return stamp(obj, OWNER)

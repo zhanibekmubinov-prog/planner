@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api, del, ENTITY_LABEL, errorText, Permission, PERMISSION_LABEL, post, put, Share, ShareEntity, UserBrief } from "./api";
 import { useConfirm } from "./confirm";
 import { useEscape } from "./layers";
+import { notifySpaceMoved } from "./spaceToast";
+import { useToast } from "./toast";
 import { Store } from "./store";
 
 export type ShareTarget = { type: ShareEntity; id: number; name: string; color?: string };
@@ -30,6 +32,7 @@ export default function ShareModal({ store, target, onClose }: { store: Store; t
   };
   useEffect(() => { void load(); }, [target.type, target.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEscape(onClose);   // С9: Esc закрывает только это окно, карточка под ним остаётся
+  const toast = useToast();
 
   const q = email.trim().toLowerCase();
   const suggestions = useMemo(() => {
@@ -42,8 +45,9 @@ export default function ShareModal({ store, target, onClose }: { store: Store; t
     if (!v) return;
     setBusy(true); setErr(null);
     try {
-      await post<Share>("/shares", { entity_type: target.type, entity_id: target.id, email: v, permission: perm });
-      setEmail(""); await load(); await store.reloadShared();
+      const saved = await post<Share>("/shares", { entity_type: target.type, entity_id: target.id, email: v, permission: perm });
+      setEmail(""); await load(); await store.reloadShared(); await store.reloadDirections();
+      notifySpaceMoved(saved.space_moved, store, toast);   // v1.7: первый доступ двигает направление в «Организацию»
     } catch (e) {
       const m = errorText(e); setErr(m.replace(/^\d+\s*/, "").replace(/^\{"detail":"(.*)"\}$/, "$1"));
     } finally { setBusy(false); }

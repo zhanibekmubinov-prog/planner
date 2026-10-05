@@ -51,6 +51,8 @@ export default function Board({ store, direction, project, looseOnly, orphans = 
     try {
       await post<Task>("/tasks", {
         title: title.trim(), status, priority: 3, direction_ids: direction ? [direction.id] : [], tool_ids: [], project_id: project?.id ?? null, checklist: [],
+        // v1.7: задача без направления несёт слой сама — иначе она пропала бы из текущего слоя
+        ...(direction ? {} : { space: store.space }),
       } satisfies TaskIn);
       await store.reloadTasks();
       return true;

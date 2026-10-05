@@ -8,7 +8,9 @@ import { useConfirm } from "./confirm";
 import { useDeletion } from "./deletion";
 import { useDirtyFlag, useEscape } from "./layers";
 import { createMindMap, MindButton } from "./MindMaps";
+import { notifySpaceMoved } from "./spaceToast";
 import { Store } from "./store";
+import { useToast } from "./toast";
 import { useIsMobile } from "./mobile";
 
 type Props = { store: Store; task: Task; onClose: () => void; onDeleted: () => void; onOpenMindmap: (id: number) => void; onShare: () => void };
@@ -332,6 +334,7 @@ function DelegationsSection({ store, taskId, editable }: { store: Store; taskId:
   const busyRef = useRef(false);
   const confirm = useConfirm();
 
+  const toast = useToast();
   const load = async () => { try { setItems(await api<Delegation[]>(`/tasks/${taskId}/delegations`)); } catch (e) { store.setError(errorText(e)); } };
   useEffect(() => { setItems(null); void load(); }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (personId === "new" && store.people[0]) setPersonId(store.people[0].id); }, [store.people]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -346,7 +349,9 @@ function DelegationsSection({ store, taskId, editable }: { store: Store; taskId:
         const p = await post<Person>("/people", { name: newName.trim(), telegram_chat_id: null, email: null, note: null });
         await store.reloadPeople(); pid = p.id;
       }
-      await post<Delegation>("/delegations", { task_id: taskId, person_id: pid, check_at: fromDateTimeInput(checkAt), comment: comment.trim() || null, status: "open" } satisfies DelegationIn);
+      const saved = await post<Delegation>("/delegations", { task_id: taskId, person_id: pid, check_at: fromDateTimeInput(checkAt), comment: comment.trim() || null, status: "open" } satisfies DelegationIn);
+      await store.reloadDirections();
+      notifySpaceMoved(saved.space_moved, store, toast);   // v1.7: поручение двигает направление в «Организацию»
       setAdding(false); setNewName(""); setCheckAt(""); setComment("");
       await load();
     } catch (e) { store.setError(errorText(e)); } finally { busyRef.current = false; setBusy(false); }

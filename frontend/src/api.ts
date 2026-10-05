@@ -68,8 +68,14 @@ export type Direction = {
   id: number; name: string; description?: string | null; goal?: string | null;
   color?: string | null; status: DirectionStatus; created_at: string; owner?: UserBrief | null; access?: Access | null;
   deleted_at?: string | null;
+  // v1.7: слой. space_pinned — слой поставлен руками, автоправило («поделились» → Организация) молчит.
+  space?: "personal" | "org"; space_pinned?: boolean;
 };
-export type DirectionIn = Omit<Direction, "id" | "created_at" | "owner" | "access" | "deleted_at">;
+export type DirectionIn = Omit<Direction, "id" | "created_at" | "owner" | "access" | "deleted_at" | "space_pinned">;
+
+/** v1.7: кто видит направление — для окна «Перенести в Личное» (GET /directions/{id}/space-preview). */
+export type SpaceAccessRow = { user_id: number; name: string; email: string; permission: Permission; via: ShareEntity };
+export type SpacePreview = { people: SpaceAccessRow[] };
 
 export type Project = {
   id: number; direction_id: number; name: string; description?: string | null; goal?: string | null;
@@ -90,7 +96,8 @@ export type TrashEntity = "direction" | "project" | "task";
 
 export type ShareEntity = "direction" | "project" | "task";
 export type Permission = "view" | "edit";
-export type Share = { id: number; entity_type: ShareEntity; entity_id: number; permission: Permission; user: UserBrief; created_at: string };
+export type Share = { id: number; entity_type: ShareEntity; entity_id: number; permission: Permission; user: UserBrief; created_at: string;
+  space_moved?: string[] };   // v1.7: направления, которые этот доступ перевёл в «Организацию»
 export type SharedWithMe = { entity_type: ShareEntity; entity_id: number; permission: Permission; name: string; direction_id?: number | null; shared_by?: UserBrief | null; created_at: string };
 export const PERMISSION_LABEL: Record<Permission, string> = { view: "Смотреть", edit: "Редактировать" };
 export const ENTITY_LABEL: Record<ShareEntity, string> = { direction: "Направление", project: "Проект", task: "Задача" };
@@ -114,6 +121,7 @@ export type Task = {
   created_at: string; updated_at: string; directions: Direction[]; tools: Tool[]; owner?: UserBrief | null;
   project_id?: number | null; access?: Access | null; assigned_to_me?: boolean; checklist?: ChecklistItem[];
   deleted_at?: string | null;
+  space?: "personal" | "org" | null;   // v1.7: значим только у задачи без направлений
   sort_order?: number;            // v1.6: ручной порядок внутри проекта / направления
   assignees?: TaskAssignee[];     // v1.6: ответственные (из поручений)
 };
@@ -122,6 +130,7 @@ export type TaskIn = {
   deadline?: string | null; next_check_at?: string | null; direction_ids: number[]; tool_ids: number[]; project_id?: number | null;
   checklist: ChecklistItem[];
   updated_at?: string;   // версия, от которой правили: при расхождении сервер отвечает 409
+  space?: "personal" | "org";   // v1.7: слой задачи без направлений
 };
 
 /** Тело PUT из карточки задачи. projectId — подставить другой проект (перенос); иначе — как у задачи. */
@@ -145,8 +154,9 @@ export type PersonIn = Omit<Person, "id" | "user_id">;
 export type Delegation = {
   id: number; task_id: number; person_id: number; check_at?: string | null; comment?: string | null;
   status: DelegationStatus; assigned_at: string; notified_at?: string | null; report?: string | null; person: Person;
+  space_moved?: string[];   // v1.7: направления, которые это поручение перевело в «Организацию»
 };
-export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at" | "report" | "person">;
+export type DelegationIn = Omit<Delegation, "id" | "assigned_at" | "notified_at" | "report" | "person" | "space_moved">;
 export type PersonSummary = { person: Person; total: number; open: number; done: number; overdue: number; check_due: number; tasks: Task[]; delegations: Delegation[] };
 
 export type Recipient = "owner" | "assignees" | "both";

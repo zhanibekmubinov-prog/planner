@@ -32,6 +32,8 @@ def _owner_can_reach(db: Session, owner: models.User | None, dirs: list[models.D
 
 def _apply(obj: models.Task, data: schemas.TaskIn, db: Session, user: models.User):
     d = data.model_dump(exclude={"updated_at"})
+    # v1.7: свой слой задачи значим только без направлений; пустое значение не затирает уже стоящий слой
+    space = d.pop("space", None)
     dir_ids = list(d.pop("direction_ids"))
     project_id = d.pop("project_id")
     project = None
@@ -53,6 +55,7 @@ def _apply(obj: models.Task, data: schemas.TaskIn, db: Session, user: models.Use
     obj.tools = fetch_tools_for_task(db, user, d.pop("tool_ids"), obj.tools or [])
     obj.project = project
     for k, v in d.items(): setattr(obj, k, v)
+    if space: obj.space = space
 
 
 def _owner_for_new(db: Session, obj: models.Task, user: models.User) -> int:

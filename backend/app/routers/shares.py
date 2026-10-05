@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .. import models, schemas
+from .. import models, schemas, spaces
 from ..auth import current_user
 from ..config import settings
 from ..crud import log
@@ -130,12 +130,16 @@ def create(data: schemas.ShareIn, background: BackgroundTasks, db: Session = Dep
         share = models.Share(entity_type=data.entity_type, entity_id=data.entity_id, user_id=target.id, permission=data.permission, granted_by=user.id)
         db.add(share); db.flush()
     log(db, obj, "share", {"to": target.email, "permission": data.permission, "by": user.id})
+    # v1.7: первый доступ переводит непришпиленное направление в «Организацию»
+    moved = spaces.auto_org(db, data.entity_type, data.entity_id) if is_new else []
     if is_new:
         # уведомление «вам открыли …» — один раз, при выдаче доступа (смена права не шумит)
         subject, tg, mail = share_notice(data.entity_type, obj, user, data.permission)
         snapshot = SimpleNamespace(email=target.email, telegram_chat_id=target.telegram_chat_id, is_admin=False, name=target.name)
         background.add_task(notify_share, snapshot, subject, tg, mail)
+    names = [d.name for d in moved]
     db.commit(); db.refresh(share)
+    share.space_moved = names
     return share
 
 

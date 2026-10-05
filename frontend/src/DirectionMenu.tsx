@@ -6,6 +6,7 @@ import { useConfirm } from "./confirm";
 import { useDeletion } from "./deletion";
 import { useEscape } from "./layers";
 import { MindGlyph } from "./MindMaps";
+import { spaceOf, SPACE_LABEL } from "./spaces";
 import { Store } from "./store";
 
 export type MenuAnchor = { direction: Direction; x: number; y: number };
@@ -23,11 +24,12 @@ type Props = {
   store: Store; anchor: MenuAnchor; onClose: () => void;
   onOpen: (d: Direction) => void; onBoard: (d: Direction) => void; onNewProject: (d: Direction) => void; onShare: (d: Direction) => void;
   onMindmaps: (d: Direction) => void; onEdit: (d: Direction) => void; onRename: (d: Direction) => void; onDeleted: (d: Direction) => void;
+  onMoveSpace: (d: Direction) => void;   // v1.7: перенести в другой слой
 };
 
 export const directionBody = (d: Direction): DirectionIn => ({ name: d.name, description: d.description ?? null, goal: d.goal ?? null, color: d.color ?? null, status: d.status });
 
-export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard, onNewProject, onShare, onMindmaps, onEdit, onRename, onDeleted }: Props) {
+export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard, onNewProject, onShare, onMindmaps, onEdit, onRename, onDeleted, onMoveSpace }: Props) {
   // Н5: берём актуальный объект из стора, а не снимок на момент открытия меню
   const d = store.directions.find((x) => x.id === anchor.direction.id) ?? anchor.direction;
   const editable = canEdit(d.access) && d.access !== "via";
@@ -74,6 +76,9 @@ export default function DirectionMenu({ store, anchor, onClose, onOpen, onBoard,
           <button role="menuitem" onClick={run(onEdit)}>Изменить: цель, цвет, описание…</button>
         </>}
         {owner && <button role="menuitem" onClick={run(onShare)}><span className="ctx-ico">⇄</span>Поделиться…</button>}
+        {owner && <button role="menuitem" onClick={run(onMoveSpace)}>
+          <span className="ctx-ico">⇅</span>Перенести в «{SPACE_LABEL[spaceOf(d) === "org" ? "personal" : "org"]}»…
+        </button>}
         {editable && <>
           <hr />
           {d.status === "active"

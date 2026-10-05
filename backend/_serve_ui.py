@@ -41,8 +41,14 @@ with SessionLocal() as db:
     db.flush()
     db.add(models.Share(entity_type="project", entity_id=p1.id, user_id=nur.id, permission="edit", granted_by=jack.id))
     db.add(models.Share(entity_type="direction", entity_id=kk.id, user_id=nur.id, permission="view", granted_by=jack.id))
+    # v1.7: слои. Эмба и КК расшарены → «Организация»; Закуп остаётся личным.
+    emba.space = "org"; kk.space = "org"
+    lich = models.Direction(name="Развитие", goal="Чему научиться в этом году", color="#047857", owner_id=jack.id, space="personal")
+    db.add(lich); db.flush()
+    task("Дочитать курс по гидроразрыву", lich, None, T.in_progress, 2)
+    task("Записаться на английский", lich, None, T.backlog, 3)
     # Нурлан открыл Джеку своё направление
-    dn = models.Direction(name="Сервис ГНБ", goal="Парк Streicher без простоев", color="#6d28d9", owner_id=nur.id); db.add(dn); db.flush()
+    dn = models.Direction(name="Сервис ГНБ", goal="Парк Streicher без простоев", color="#6d28d9", owner_id=nur.id, space="org"); db.add(dn); db.flush()
     pn1 = models.Project(direction_id=dn.id, name="Ремонт HDD-2", owner_id=nur.id); db.add(pn1); db.flush()
     task("Заказать гидромотор", dn, pn1, T.in_progress, 1, owner=nur)
     task("Подготовить акт дефектовки", dn, pn1, T.backlog, 2, owner=nur)

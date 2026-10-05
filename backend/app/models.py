@@ -63,6 +63,10 @@ class Direction(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина (soft-delete)
+    # v1.7: слой — personal | org (см. spaces.py). space_pinned=True — владелец поставил слой руками,
+    # автоправило («поделились» или «поручил» → Организация) это направление больше не трогает.
+    space: Mapped[str] = mapped_column(String(8), default="personal", server_default="personal", index=True)
+    space_pinned: Mapped[bool] = mapped_column(default=False, server_default="0")
     # `tasks` / `projects` — только живые (не в корзине); `all_projects` — все, нужен для каскада при удалении навсегда
     tasks: Mapped[list["Task"]] = relationship(secondary=task_directions, back_populates="directions",
                                                secondaryjoin="and_(task_directions.c.task_id == Task.id, Task.deleted_at.is_(None))")
@@ -130,6 +134,9 @@ class Task(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # v0.8: корзина
     # v1.6: ручной порядок внутри проекта / направления (перетаскивание). 0 у всех = прежний порядок по приоритету
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # v1.7: собственный слой — используется ТОЛЬКО когда у задачи нет живых направлений
+    # («Без направления»). Есть направления — слой считается по ним (spaces.task_space).
+    space: Mapped[str | None] = mapped_column(String(8))
     # только живые направления: связи с направлениями в корзине остаются в task_directions (нужны для восстановления)
     directions: Mapped[list[Direction]] = relationship(secondary=task_directions, back_populates="tasks",
                                                        secondaryjoin="and_(task_directions.c.direction_id == Direction.id, Direction.deleted_at.is_(None))")

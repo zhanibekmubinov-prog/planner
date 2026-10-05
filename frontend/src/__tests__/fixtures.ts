@@ -25,6 +25,7 @@ export function makeStore(over: Partial<Store> = {}): Store {
   return {
     me: { id: 1, email: "me@example.com", name: "Я", is_admin: false, digest_enabled: false },
     directions: [], projects: [], tasks: [], inbox: [], people: [], tools: [], mindmaps: [], shared: [], trash: null,
+    space: "personal", setSpace: vi.fn(), spaceCounts: { personal: 0, org: 0 },
     loading: false, error: null,
     reload: noop(), reloadTasks: noop(), reloadDirections: noop(), reloadProjects: noop(), reloadShared: noop(),
     reloadPeople: noop(), reloadTools: noop(), reloadMindmaps: noop(), reloadTrash: noop(), reloadMe: noop(),

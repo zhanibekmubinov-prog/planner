@@ -35,7 +35,8 @@ export default function DirectionModal({ store, direction, onClose, onSaved, onD
       const body = { ...form, name: form.name.trim(), goal: form.goal?.trim() || null, description: form.description?.trim() || null };
       if (direction && body.status === "archived" && direction.status !== "archived"
         && !(await confirm(`Направление «${body.name}» уйдёт из левой панели и с карты. Вернуть — из раздела «Архив».`, { title: "Убрать в архив?", okLabel: "В архив" }))) return;
-      const saved = direction ? await put<Direction>(`/directions/${direction.id}`, body) : await post<Direction>("/directions", body);
+      // v1.7: новое направление рождается в слое, в котором владелец сейчас работает
+      const saved = direction ? await put<Direction>(`/directions/${direction.id}`, body) : await post<Direction>("/directions", { ...body, space: store.space });
       await store.reloadDirections();
       if (direction) await store.reloadTasks();
       onSaved(saved);

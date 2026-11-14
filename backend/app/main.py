@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .auth import require_token
+from . import live
 from .config import settings
 from .routers import auth as auth_router, directions, guests, mcp, mcp_oauth, mindmaps, notify, projects, shares, simple, tasks, telegram, tools
 from .scheduler import run_forever
@@ -26,7 +27,7 @@ async def lifespan(app: FastAPI):
         await task
 
 
-app = FastAPI(title="CIS Planner API", version="1.7", lifespan=lifespan)
+app = FastAPI(title="CIS Planner API", version="1.8", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_list, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -40,6 +41,8 @@ for r in (directions.router, projects.router, shares.router, tasks.router, tools
     app.include_router(r, prefix="/api", dependencies=[Depends(require_token)])
 app.include_router(auth_router.router, prefix="/api")  # /auth/login и /auth/callback — без токена
 app.include_router(telegram.router, prefix="/api")     # вебхук бота (своя проверка секрета) и /telegram/link
+# v1.8: живой режим майндмапа — WebSocket со своей проверкой сессии первым сообщением (Depends с HTTPBearer тут не работает)
+app.include_router(live.router)
 # MCP-коннектор для Claude: OAuth (/oauth/*, /.well-known/*) и сам эндпоинт /mcp — со своей проверкой Bearer-токена
 app.include_router(mcp_oauth.router)
 app.include_router(mcp.router)

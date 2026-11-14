@@ -412,6 +412,9 @@ class MindMapIn(BaseModel):
     direction_id: int | None = None
     task_id: int | None = None
     data: dict
+    # v1.8: PUT заменяет карту целиком. Если клиент передал версию, а карту за это время
+    # поменяли — 409, а не тихая перезапись чужих правок. Без версии — как раньше (старые клиенты).
+    version: int | None = None
 
 class MindMapOut(ORM):
     id: int
@@ -421,6 +424,27 @@ class MindMapOut(ORM):
     data: dict
     created_at: datetime
     updated_at: datetime
+    # v1.8: совместная правка
+    version: int = 0
+    access: str | None = None          # owner | edit | view (см. scope.mindmap_access)
+    owner: UserBrief | None = None
+
+class MindMapOpsIn(BaseModel):
+    """POST /mindmaps/{id}/ops: пачка операций над узлами (см. mindmap_ops.py)."""
+    batch: str = Field(min_length=1, max_length=64)   # id пачки от клиента — по нему он узнаёт свою пачку в рассылке
+    ops: list[dict]
+
+class MindMapOpsOut(BaseModel):
+    version: int
+    title: str
+    data: dict
+    applied: int
+    skipped: list[dict] = []
+
+class MindMapLinkIn(BaseModel):
+    """PUT /mindmaps/{id}/link: к какому направлению / задаче привязана карта (только владелец)."""
+    direction_id: int | None = None
+    task_id: int | None = None
 
 
 TaskOut.model_rebuild()

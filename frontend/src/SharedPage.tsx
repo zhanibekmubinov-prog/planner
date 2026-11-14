@@ -19,7 +19,7 @@ export default function SharedPage({ store, onOpen }: Props) {
   }, [store.shared]);
 
   const openCount = (s: SharedWithMe) => {
-    if (s.entity_type === "task") return null;
+    if (s.entity_type === "task" || s.entity_type === "mindmap") return null;
     const ts = store.tasks.filter((t) => t.status !== "done" && (s.entity_type === "project" ? t.project_id === s.entity_id : t.directions.some((d) => d.id === s.entity_id)));
     return ts.length;
   };

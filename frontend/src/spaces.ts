@@ -62,11 +62,14 @@ export function filterForSpace(
   const trashDirIds = new Set((data.trash?.directions || []).filter((d) => dirInSpace(d, space)).map((d) => d.id));
   const known = new Set([...ids, ...trashDirIds]);
   const inSpaceProject = (p: Project) => known.has(p.direction_id);
+  const everyDir = new Set([...data.directions, ...(data.trash?.directions || [])].map((d) => d.id));
   return {
     directions,
     projects: data.projects.filter(inSpaceProject),
     tasks: data.tasks.filter((t) => taskInSpace(t, space)),
-    mindmaps: data.mindmaps.filter((m) => m.direction_id == null || known.has(m.direction_id)),
+    // v1.8: карту, открытую мне отдельно, из чужого направления, которого я не вижу, — показываем в обоих слоях
+    // (как «Общие»): слой берётся от направления, а его у меня нет
+    mindmaps: data.mindmaps.filter((m) => m.direction_id == null || known.has(m.direction_id) || !everyDir.has(m.direction_id)),
     trash: data.trash
       ? {
           directions: data.trash.directions.filter((d) => dirInSpace(d, space)),

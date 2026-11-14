@@ -1,17 +1,21 @@
 // v1.2 — майндмап: важность, цвет/толщина ветки, подпись линии, связи-стрелки.
-// Проверяем тем, что уходит в PUT /mindmaps/:id — то, что увидит следующий, кто откроет карту.
+// Проверяем тем, что сохранил сервер — то, что увидит следующий, кто откроет карту.
+// v1.8: редактор шлёт операции (POST /mindmaps/:id/ops); «сервер» в тесте применяет их тем же applyOps,
+// что и настоящий (backend/app/mindmap_ops.py — зеркало), и отвечает картой целиком.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MindMap, MindMapIn, MindNode } from "../api";
+import type { MindMap, MindNode, MindOp } from "../api";
 import MindMapEditor from "../MindMapEditor";
+import { applyOps } from "../mindmapOps";
 import { makeStore } from "./fixtures";
 
 vi.mock("../api", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../api")>();
   return { ...orig, api: vi.fn(async () => []), put: vi.fn(), post: vi.fn(), del: vi.fn() };
 });
-import { put } from "../api";
-const putMock = vi.mocked(put) as unknown as ReturnType<typeof vi.fn<(path: string, body: MindMapIn) => Promise<MindMap>>>;
+import { post } from "../api";
+const postMock = vi.mocked(post) as unknown as ReturnType<typeof vi.fn<(path: string, body: { batch: string; ops: MindOp[] }) => Promise<unknown>>>;
+let server: { tree: MindNode; title: string; version: number };
 
 const tree: MindNode = {
   id: "root", text: "ГРП", children: [
@@ -25,15 +29,23 @@ function open() {
   render(<MindMapEditor store={makeStore({ mindmaps: [map] })} map={map} onBack={() => {}} onDeleted={() => {}} />);
 }
 const node = (text: string) => screen.getByText(text).closest("[data-node]") as HTMLElement;
-let seen = 0;   // сколько PUT уже учтено — ждём следующий, а не первый попавшийся
+let seen = 0;   // сколько пачек уже учтено — ждём следующую, а не первую попавшуюся
 const lastSaved = async (): Promise<MindNode> => {
-  await waitFor(() => expect(putMock.mock.calls.length).toBeGreaterThan(seen), { timeout: 2000 });
-  seen = putMock.mock.calls.length;
-  return putMock.mock.calls[seen - 1][1].data;
+  await waitFor(() => expect(postMock.mock.calls.length).toBeGreaterThan(seen), { timeout: 2000 });
+  seen = postMock.mock.calls.length;
+  return server.tree;
 };
 const find = (n: MindNode, id: string): MindNode | null => n.id === id ? n : n.children.map((c) => find(c, id)).find(Boolean) ?? null;
 
-beforeEach(() => { seen = 0; putMock.mockReset(); putMock.mockImplementation(async (_p, body) => ({ ...map, ...body })); });
+beforeEach(() => {
+  seen = 0; server = { tree: tree, title: map.title, version: 0 };
+  postMock.mockReset();
+  postMock.mockImplementation(async (_p, body) => {
+    const next = applyOps({ tree: server.tree, title: server.title }, body.ops);
+    server = { ...next, version: server.version + 1 };
+    return { version: server.version, title: server.title, data: server.tree, applied: body.ops.length, skipped: [] };
+  });
+});
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("Майндмап v1.2", () => {
@@ -90,6 +102,7 @@ describe("Майндмап v1.2", () => {
 
   it("повторная связь тех же узлов не создаётся; удаление ветки убирает её связи", async () => {
     const withLink: MindMap = { ...map, data: { ...tree, links: [{ id: "L1", from: "b", to: "a1" }] } };
+    server = { tree: withLink.data, title: map.title, version: 0 };
     render(<MindMapEditor store={makeStore({ mindmaps: [withLink] })} map={withLink} onBack={() => {}} onDeleted={() => {}} />);
     fireEvent.click(node("Импеллеры"));
     fireEvent.click(screen.getByText("Связать"));

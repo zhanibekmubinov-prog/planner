@@ -598,8 +598,9 @@ PRIORITY_MARK = ["", "!", "!!", "!!!"]
 
 
 def my_mindmaps(db: Session, user: models.User) -> list[models.MindMap]:
-    """Майндмапы — только свои (как в REST: у карт нет совместного доступа)."""
-    return db.scalars(select(models.MindMap).where(models.MindMap.owner_id == user.id).order_by(models.MindMap.updated_at.desc())).all()
+    """Майндмапы, которые видны пользователю (v1.8: свои + открытые ему — как в REST, scope.visible_mindmaps)."""
+    from .scope import visible_mindmaps
+    return visible_mindmaps(db, user)
 
 
 def resolve_mindmap(db, user, ref) -> models.MindMap:

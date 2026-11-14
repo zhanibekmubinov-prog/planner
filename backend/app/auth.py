@@ -40,31 +40,38 @@ def owner_user(db: Session) -> models.User:
     return u
 
 
+def user_from_session(db: Session, raw: str) -> models.User:
+    """Пользователь по JWT нашей сессии; 401, если сессия недействительна.
+    v1.8: отдельно от current_user — этим же проверяется живое соединение майндмапа (WebSocket),
+    где браузер не умеет ставить заголовок Authorization."""
+    try:
+        # exp и sub обязательны: без exp сессия была бы бессрочной, без числового sub — 500 вместо 401
+        data = jwt.decode(raw, settings.session_secret, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+        uid = int(data["sub"])
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session expired")
+    u = db.get(models.User, uid)
+    if not u:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
+    # v0.10: гость работает, пока он в списке гостей. Убрали из списка — сессия перестаёт действовать сразу.
+    # v0.10.1: смена пароля гасит прежние сессии — сессия старше password_set_at не принимается.
+    from .guests import get_guest, is_work_email
+    if not is_work_email(u.email) and settings.allowed_domains:
+        g = get_guest(db, u.email)
+        if g is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "access revoked")
+        if int(data.get("pv") or 0) != int(g.password_version or 0):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "password changed")
+    return u
+
+
 def current_user(
     token: str | None = Depends(api_key_header),
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> models.User:
     if creds and creds.scheme.lower() == "bearer":
-        try:
-            # exp и sub обязательны: без exp сессия была бы бессрочной, без числового sub — 500 вместо 401
-            data = jwt.decode(creds.credentials, settings.session_secret, algorithms=["HS256"], options={"require": ["exp", "sub"]})
-            uid = int(data["sub"])
-        except (jwt.PyJWTError, KeyError, TypeError, ValueError):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session expired")
-        u = db.get(models.User, uid)
-        if not u:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
-        # v0.10: гость работает, пока он в списке гостей. Убрали из списка — сессия перестаёт действовать сразу.
-        # v0.10.1: смена пароля гасит прежние сессии — сессия старше password_set_at не принимается.
-        from .guests import get_guest, is_work_email
-        if not is_work_email(u.email) and settings.allowed_domains:
-            g = get_guest(db, u.email)
-            if g is None:
-                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "access revoked")
-            if int(data.get("pv") or 0) != int(g.password_version or 0):
-                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "password changed")
-        return u
+        return user_from_session(db, creds.credentials)
     if token and secrets.compare_digest(token.encode(), settings.api_token.encode()):  # Н1: сравнение за постоянное время
         return owner_user(db)
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bad token")

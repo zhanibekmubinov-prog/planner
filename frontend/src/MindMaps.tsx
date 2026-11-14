@@ -1,6 +1,6 @@
 // Раздел «Майндмапы»: все карты — свободные, по направлениям, по задачам. Плюс общая кнопка-глиф.
 import { useState } from "react";
-import { Direction, dirColor, errorText, MIND_COLOR, MindMap, MindMapIn, post, showDateTime, Task } from "./api";
+import { Direction, dirColor, errorText, isShared, MIND_COLOR, MindMap, MindMapIn, post, showDateTime, Task } from "./api";
 import { Store } from "./store";
 
 /** Создать пустой майндмап и вернуть его. */
@@ -40,7 +40,8 @@ export default function MindMapsPage({ store, filterDirection, onOpen, onOpenTas
   const [linkDir, setLinkDir] = useState<number | "">(filterDirection ?? "");
   const [busy, setBusy] = useState(false);
 
-  const maps = filterDirection ? store.mindmaps.filter((m) => m.direction_id === filterDirection) : store.mindmaps;
+  let maps = filterDirection ? store.mindmaps.filter((m) => m.direction_id === filterDirection) : store.mindmaps;
+  const total = maps.length;
   const dirOf = (m: MindMap): Direction | undefined => store.directions.find((d) => d.id === m.direction_id);
   const taskOf = (m: MindMap): Task | undefined => store.tasks.find((t) => t.id === m.task_id);
   const filterDir = filterDirection ? store.directions.find((d) => d.id === filterDirection) : undefined;
@@ -55,6 +56,11 @@ export default function MindMapsPage({ store, filterDirection, onOpen, onOpenTas
   const groups: { key: string; label: string; color?: string; items: MindMap[] }[] = [];
   // С7: направление удалено (в корзине) — карта не пропадает, а показывается среди свободных
   const known = new Set(store.directions.map((d) => d.id));
+  // v1.8: чужие карты, чьё направление мне не видно (открыли саму карту или задачу), — отдельной группой
+  const foreign = (m: MindMap) => isShared(m.access) && (!m.direction_id || !known.has(m.direction_id));
+  const sharedMaps = maps.filter(foreign);
+  if (sharedMaps.length) groups.push({ key: "shared", label: "Открыли мне", items: sharedMaps });
+  maps = maps.filter((m) => !foreign(m));
   const free = maps.filter((m) => (!m.direction_id || !known.has(m.direction_id)) && !m.task_id);
   if (free.length) groups.push({ key: "free", label: "Свободные", items: free });
   for (const d of store.directions) {
@@ -87,7 +93,7 @@ export default function MindMapsPage({ store, filterDirection, onOpen, onOpenTas
         </div>
       )}
 
-      {maps.length === 0 && !creating ? (
+      {total === 0 && !creating ? (
         <div className="state">
           <h3>Майндмапов пока нет</h3>
           <p>Начните с одного — например, «Что мешает закупу» или «План на квартал».</p>
@@ -105,8 +111,9 @@ export default function MindMapsPage({ store, filterDirection, onOpen, onOpenTas
                   <button key={m.id} className="mm-card" onClick={() => onOpen(m.id)} style={{ ["--c" as string]: d ? dirColor(d) : MIND_COLOR }}>
                     <MiniMap map={m} />
                     <div className="mm-card-body">
-                      <div className="mm-card-title">{m.title}</div>
+                      <div className="mm-card-title">{isShared(m.access) && <span className="mm-shared" title={m.access === "view" ? "Открыта вам на просмотр" : "Открыта вам на редактирование"}>⇄ </span>}{m.title}</div>
                       <div className="mm-card-meta">
+                        {isShared(m.access) && m.owner && <>{m.owner.name}{m.access === "view" ? " · просмотр" : ""} · </>}
                         {nodes} {plural(nodes, "узел", "узла", "узлов")} · {showDateTime(m.updated_at)}
                         {t && <> · <span className="link" onClick={(e) => { e.stopPropagation(); onOpenTask(t.id); }}>задача: {t.title}</span></>}
                       </div>

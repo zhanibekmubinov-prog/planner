@@ -104,7 +104,7 @@ class Share(Base):
     __tablename__ = "shares"
     __table_args__ = (UniqueConstraint("entity_type", "entity_id", "user_id", name="uq_share_entity_user"),)
     id: Mapped[int] = mapped_column(primary_key=True)
-    entity_type: Mapped[str] = mapped_column(String(16), index=True)   # direction | project | task
+    entity_type: Mapped[str] = mapped_column(String(16), index=True)   # direction | project | task | mindmap (v1.8)
     entity_id: Mapped[int] = mapped_column(Integer, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     permission: Mapped[str] = mapped_column(String(8), default="view")  # view | edit
@@ -226,10 +226,14 @@ class MindMap(Base):
     # {"id": "root", "text": "...", "children": [{"id": "...", "text": "...", "children": [...], "collapsed": false}]}
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    # v1.8: номер правки. Растёт на каждую принятую пачку операций (POST /mindmaps/{id}/ops) и на PUT —
+    # по нему участники совместной правки понимают, не пропустили ли они чужие изменения.
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     direction: Mapped["Direction | None"] = relationship()
     task: Mapped["Task | None"] = relationship()
+    owner: Mapped["User | None"] = relationship()
 
 
 class ActivityLog(Base):

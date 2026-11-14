@@ -44,7 +44,25 @@ def directions_touched(db: Session, entity_type: str, entity_id: int) -> list[mo
     if entity_type == "task":
         t = db.get(models.Task, entity_id)
         return [d for d in t.directions if d.deleted_at is None] if t else []
+    if entity_type == "mindmap":   # v1.8: открыли карту направления — направление тоже стало общим
+        m = db.get(models.MindMap, entity_id)
+        return [m.direction] if m and m.direction and m.direction.deleted_at is None else []
     return []
+
+
+def _shares_of(db: Session, direction: models.Direction):
+    """Все шары направления: само, его проекты, задачи и (v1.8) майндмапы."""
+    project_ids = [p.id for p in direction.projects]
+    task_ids = [t.id for t in direction.tasks]
+    map_ids = list(db.scalars(select(models.MindMap.id).where(models.MindMap.direction_id == direction.id)).all())
+    return db.scalars(
+        select(models.Share).where(
+            (models.Share.entity_type == "direction") & (models.Share.entity_id == direction.id)
+            | ((models.Share.entity_type == "project") & models.Share.entity_id.in_(project_ids or [-1]))
+            | ((models.Share.entity_type == "task") & models.Share.entity_id.in_(task_ids or [-1]))
+            | ((models.Share.entity_type == "mindmap") & models.Share.entity_id.in_(map_ids or [-1]))
+        )
+    ).all()
 
 
 def auto_org(db: Session, entity_type: str, entity_id: int) -> list[models.Direction]:
@@ -72,15 +90,7 @@ def access_preview(db: Session, direction: models.Direction) -> list[dict]:
     Нужно для окна «Перенести в Личное»: владелец должен видеть, кто продолжит это
     видеть, если доступ оставить. Одна строка на человека, право — сильнейшее из его шар.
     """
-    project_ids = [p.id for p in direction.projects]
-    task_ids = [t.id for t in direction.tasks]
-    rows = db.scalars(
-        select(models.Share).where(
-            (models.Share.entity_type == "direction") & (models.Share.entity_id == direction.id)
-            | ((models.Share.entity_type == "project") & models.Share.entity_id.in_(project_ids or [-1]))
-            | ((models.Share.entity_type == "task") & models.Share.entity_id.in_(task_ids or [-1]))
-        )
-    ).all()
+    rows = _shares_of(db, direction)
     best: dict[int, dict] = {}
     for s in rows:
         cur = best.get(s.user_id)
@@ -96,16 +106,8 @@ def access_preview(db: Session, direction: models.Direction) -> list[dict]:
 
 
 def revoke_all(db: Session, direction: models.Direction) -> int:
-    """Снять весь доступ к направлению, его проектам и задачам. Возвращает число снятых шар."""
-    project_ids = [p.id for p in direction.projects]
-    task_ids = [t.id for t in direction.tasks]
-    rows = db.scalars(
-        select(models.Share).where(
-            (models.Share.entity_type == "direction") & (models.Share.entity_id == direction.id)
-            | ((models.Share.entity_type == "project") & models.Share.entity_id.in_(project_ids or [-1]))
-            | ((models.Share.entity_type == "task") & models.Share.entity_id.in_(task_ids or [-1]))
-        )
-    ).all()
+    """Снять весь доступ к направлению, его проектам, задачам и майндмапам. Возвращает число снятых шар."""
+    rows = _shares_of(db, direction)
     for s in rows:
         db.delete(s)
     return len(rows)

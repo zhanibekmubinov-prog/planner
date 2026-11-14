@@ -99,6 +99,15 @@ function Workspace() {
     if (store.loading) return;
     const q = new URLSearchParams(window.location.search);
     const taskId = Number(q.get("task")), projectId = Number(q.get("project")), directionId = Number(q.get("direction"));
+    const mindmapId = Number(q.get("mindmap"));   // v1.8: «вам открыли майндмап»
+    if (mindmapId) {
+      // карта идёт за слоем своего направления: нет в текущем слое — переключаем на другой (там её и найдёт
+      // редактор; нет и там — экран «Майндмап не найден» с кнопкой «К списку»)
+      if (!store.mindmaps.some((m) => m.id === mindmapId)) store.setSpace(store.space === "personal" ? "org" : "personal");
+      setView({ kind: "mindmap", id: mindmapId });
+      window.history.replaceState(null, "", window.location.pathname);
+      return;
+    }
     if (taskId && store.tasks.some((t) => t.id === taskId)) { setView({ kind: "board", directionId: null }); setSelectedId(taskId); }
     else if (taskId && store.inbox.some((t) => t.id === taskId)) { setView({ kind: "inbox" }); }
     else if (taskId) toast(`Задача #${taskId} недоступна: удалена, в корзине или доступ к ней закрыт.`);   // Н3
@@ -113,6 +122,7 @@ function Workspace() {
   const openShared = (s: SharedWithMe) => {
     if (s.entity_type === "direction") setView({ kind: "direction", directionId: s.entity_id });
     else if (s.entity_type === "project") { const p = store.projects.find((x) => x.id === s.entity_id); setView({ kind: "board", directionId: p?.direction_id ?? s.direction_id ?? null, projectId: s.entity_id }); }
+    else if (s.entity_type === "mindmap") setView({ kind: "mindmap", id: s.entity_id });   // v1.8
     else { setView({ kind: "board", directionId: null }); setSelectedId(s.entity_id); }
   };
   const sharedOpen = store.shared.length;

@@ -94,13 +94,13 @@ export type Impact = { projects: number; tasks: number; open_tasks: number; shar
 export type TrashOut = { directions: Direction[]; projects: Project[]; tasks: Task[] };
 export type TrashEntity = "direction" | "project" | "task";
 
-export type ShareEntity = "direction" | "project" | "task";
+export type ShareEntity = "direction" | "project" | "task" | "mindmap";   // v1.8: карту можно открыть отдельно
 export type Permission = "view" | "edit";
 export type Share = { id: number; entity_type: ShareEntity; entity_id: number; permission: Permission; user: UserBrief; created_at: string;
   space_moved?: string[] };   // v1.7: направления, которые этот доступ перевёл в «Организацию»
 export type SharedWithMe = { entity_type: ShareEntity; entity_id: number; permission: Permission; name: string; direction_id?: number | null; shared_by?: UserBrief | null; created_at: string };
 export const PERMISSION_LABEL: Record<Permission, string> = { view: "Смотреть", edit: "Редактировать" };
-export const ENTITY_LABEL: Record<ShareEntity, string> = { direction: "Направление", project: "Проект", task: "Задача" };
+export const ENTITY_LABEL: Record<ShareEntity, string> = { direction: "Направление", project: "Проект", task: "Задача", mindmap: "Майндмап" };
 
 export type Tool = {
   id: number; name: string; type: ToolType; url?: string | null;
@@ -176,8 +176,26 @@ export type MindNode = {
 export type MindMap = {
   id: number; title: string; direction_id?: number | null; task_id?: number | null; data: MindNode;
   created_at: string; updated_at: string;
+  // v1.8: совместная работа. version — номер правки (растёт на каждую принятую пачку операций);
+  // access — owner | edit | view; owner — кто создал карту (удаляет, перепривязывает и делится только он).
+  version?: number; access?: Access | null; owner?: UserBrief | null;
 };
 export type MindMapIn = { title: string; direction_id?: number | null; task_id?: number | null; data: MindNode };
+
+/** v1.8: операция над картой (зеркало backend/app/mindmap_ops.py). null в fields — убрать поле («как по умолчанию»). */
+export type MindNodeFields = { text: string; color: string; width: -1 | 1; priority: 0 | 1 | 2 | 3; note: string; collapsed: boolean };
+export type MindOp =
+  | { type: "add"; parent: string; index?: number | null; node: { id: string; text: string } & Partial<MindNodeFields> }
+  | { type: "set"; id: string; fields: { [K in keyof MindNodeFields]?: MindNodeFields[K] | null } }
+  | { type: "remove"; id: string }
+  | { type: "move"; id: string; parent: string; index?: number | null }
+  | { type: "link_add"; link: MindLink }
+  | { type: "link_set"; id: string; fields: { color?: string | null; note?: string | null } }
+  | { type: "link_remove"; id: string }
+  | { type: "title"; title: string };
+export type MindOpsOut = { version: number; title: string; data: MindNode; applied: number; skipped: unknown[] };
+/** Кто сейчас на карте (живой канал): цвет — свой у каждого человека, node — выбранный узел, editing — печатает в нём. */
+export type MindPeer = { sid: string; user_id: number; name: string; color: string; node: string | null; editing: boolean };
 export const MIND_COLOR = "#0f766e"; // фирменный цвет майндмапов — отличается от акцента и цветов направлений
 export const newNodeId = () => Math.random().toString(36).slice(2, 10);
 

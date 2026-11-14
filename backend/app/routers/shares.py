@@ -19,16 +19,17 @@ from ..db import get_db
 router = APIRouter(prefix="/shares", tags=["shares"])
 log_ = logging.getLogger("shares")
 
-ENTITY = {"direction": models.Direction, "project": models.Project, "task": models.Task}
+# v1.8: майндмап можно открыть отдельно от его направления (корзины у карт нет — deleted_at всегда пусто)
+ENTITY = {"direction": models.Direction, "project": models.Project, "task": models.Task, "mindmap": models.MindMap}
 PERMS = ("view", "edit")
 
 
 def _entity(db: Session, entity_type: str, entity_id: int):
     model = ENTITY.get(entity_type)
     if not model:
-        raise HTTPException(400, "entity_type: direction | project | task")
+        raise HTTPException(400, "entity_type: direction | project | task | mindmap")
     obj = db.get(model, entity_id)
-    if not obj or obj.deleted_at is not None:   # то, что в корзине, расшарить нельзя
+    if not obj or getattr(obj, "deleted_at", None) is not None:   # то, что в корзине, расшарить нельзя
         raise HTTPException(404, f"{entity_type} {entity_id} not found")
     return obj
 
@@ -44,7 +45,7 @@ def _name(obj) -> str:
     return getattr(obj, "title", None) or getattr(obj, "name", "")
 
 
-KIND_RU = {"direction": "направление", "project": "проект", "task": "задачу"}
+KIND_RU = {"direction": "направление", "project": "проект", "task": "задачу", "mindmap": "майндмап"}
 PERM_RU = {"view": "просмотр", "edit": "редактирование"}
 
 
@@ -53,6 +54,7 @@ def _link(entity_type: str, obj) -> str:
     if not base: return ""
     if entity_type == "task": return f"{base}/?task={obj.id}"
     if entity_type == "project": return f"{base}/?project={obj.id}"
+    if entity_type == "mindmap": return f"{base}/?mindmap={obj.id}"
     return f"{base}/?direction={obj.id}"
 
 
@@ -82,6 +84,7 @@ def _direction_id(obj) -> int | None:
     if isinstance(obj, models.Direction): return obj.id
     if isinstance(obj, models.Project): return obj.direction_id
     if isinstance(obj, models.Task): return obj.directions[0].id if obj.directions else None
+    if isinstance(obj, models.MindMap): return obj.direction_id
     return None
 
 
@@ -178,8 +181,9 @@ def with_me(db: Session = Depends(get_db), user: models.User = Depends(current_u
     """Раздел «Общие»: что мне открыли другие."""
     out = []
     for s in db.scalars(select(models.Share).where(models.Share.user_id == user.id).order_by(models.Share.created_at.desc())).all():
-        obj = db.get(ENTITY[s.entity_type], s.entity_id)
-        if not obj or obj.deleted_at is not None: continue
+        model = ENTITY.get(s.entity_type)
+        obj = db.get(model, s.entity_id) if model else None
+        if not obj or getattr(obj, "deleted_at", None) is not None: continue
         out.append(schemas.SharedWithMe(entity_type=s.entity_type, entity_id=s.entity_id, permission=s.permission, name=_name(obj),
                                         direction_id=_direction_id(obj), shared_by=s.granter, created_at=s.created_at))
     return out

@@ -16,7 +16,7 @@ v0.8 — корзина (soft-delete): у Direction/Project/Task есть `delet
 Владелец направления/проекта всегда видит задачи внутри своего контейнера (даже если владелец задачи другой).
 """
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session, selectinload
 from . import models
 
@@ -48,12 +48,13 @@ class Grants:
         self.direction: dict[int, str] = {}
         self.project: dict[int, str] = {}
         self.task: dict[int, str] = {}
+        self.mindmap: dict[int, str] = {}   # v1.8: карту открыли отдельно от направления
         for et, eid, perm in rows:
             getattr(self, et, {})[eid] = perm
 
     @property
     def empty(self) -> bool:
-        return not (self.direction or self.project or self.task)
+        return not (self.direction or self.project or self.task or self.mindmap)
 
 
 def _best(*perms: str | None) -> str | None:
@@ -194,7 +195,14 @@ def orphan_clause():
 
 def visible_tasks_query(db: Session, user: models.User):
     """Живые задачи: мои, порученные мне, расшаренные и лежащие в моих направлениях/проектах."""
-    g = Grants(db, user)
+    # поручения и людей подгружаем сразу: их читает и `assigned_to_me`, и `assignees` (v1.6) у каждой задачи
+    return (select(models.Task).where(visible_tasks_clause(db, user))
+            .options(selectinload(models.Task.delegations).selectinload(models.Delegation.person)))
+
+
+def visible_tasks_clause(db: Session, user: models.User, g: Grants | None = None):
+    """SQL-условие «задача видна пользователю» (то же, что в visible_tasks_query)."""
+    g = g or Grants(db, user)
     conds = [models.Task.owner_id == user.id, assigned_to_me_clause(db, user),
              models.Task.project_id.in_(my_alive_projects_subq(user)),
              exists().where(models.task_directions.c.task_id == models.Task.id,
@@ -206,9 +214,7 @@ def visible_tasks_query(db: Session, user: models.User):
     if g.direction:
         conds.append(exists().where(models.task_directions.c.task_id == models.Task.id,
                                     models.task_directions.c.direction_id.in_(list(g.direction))))
-    # поручения и людей подгружаем сразу: их читает и `assigned_to_me`, и `assignees` (v1.6) у каждой задачи
-    return (select(models.Task).where(alive(models.Task), or_(*conds))
-            .options(selectinload(models.Task.delegations).selectinload(models.Delegation.person)))
+    return and_(alive(models.Task), or_(*conds))
 
 
 def stamp_tasks(db: Session, user: models.User, tasks) -> list[models.Task]:
@@ -291,6 +297,59 @@ def get_project_editable(db: Session, user: models.User, id_: int) -> models.Pro
     if p.access not in WRITE:
         raise HTTPException(403, "Только просмотр: проект открыт вам без права редактирования")
     return p
+
+
+# ── Майндмапы (v1.8) ─────────────────────────────────────────────────────────
+# Карта видна и правится вслед за тем, к чему привязана: кто правит направление или задачу —
+# правит и карту, кто смотрит — смотрит. Плюс карту можно открыть отдельно (Share с
+# entity_type="mindmap"). Право сильнейшее из всех путей. Удалить карту, поменять её привязку
+# и раздавать доступ — только владелец (создатель) карты.
+
+def mindmap_access(db: Session, user: models.User, m: models.MindMap, g: Grants | None = None) -> str | None:
+    if m.owner_id == user.id:
+        return OWNER
+    g = g or Grants(db, user)
+    perms: list[str | None] = [g.mindmap.get(m.id)]
+    if m.direction_id and m.direction is not None:
+        a = direction_access(db, user, m.direction, g)
+        perms.append(EDIT if a in WRITE else VIEW if a == VIEW else None)   # via — только обложка, карту не открывает
+    if m.task_id and m.task is not None:
+        a = task_access(db, user, m.task, g)
+        perms.append(EDIT if a in WRITE else VIEW if a in (VIEW, ASSIGNEE) else None)
+    return _best(*perms)
+
+
+def visible_mindmaps(db: Session, user: models.User) -> list[models.MindMap]:
+    """Мои карты + открытые мне напрямую + лежащие в видимых мне направлениях и задачах. Свежие сверху."""
+    g = Grants(db, user)
+    conds = [models.MindMap.owner_id == user.id,
+             models.MindMap.direction_id.in_(my_alive_directions_subq(user)),
+             models.MindMap.task_id.in_(select(models.Task.id).where(visible_tasks_clause(db, user, g)))]
+    if g.mindmap:
+        conds.append(models.MindMap.id.in_(list(g.mindmap)))
+    if g.direction:
+        conds.append(models.MindMap.direction_id.in_(list(g.direction)))
+    out = []
+    for m in db.scalars(select(models.MindMap).where(or_(*conds)).order_by(models.MindMap.updated_at.desc(), models.MindMap.id.desc())).all():
+        acc = mindmap_access(db, user, m, g)
+        if acc:
+            out.append(stamp(m, acc))
+    return out
+
+
+def get_mindmap_visible(db: Session, user: models.User, id_: int) -> models.MindMap:
+    m = db.get(models.MindMap, id_)
+    acc = mindmap_access(db, user, m) if m else None
+    if not acc:
+        raise HTTPException(404, f"MindMap {id_} not found")
+    return stamp(m, acc)
+
+
+def get_mindmap_editable(db: Session, user: models.User, id_: int) -> models.MindMap:
+    m = get_mindmap_visible(db, user, id_)
+    if m.access not in WRITE:
+        raise HTTPException(403, "Только просмотр: карту открыли вам без права редактирования")
+    return m
 
 
 def fetch_owned_many(db: Session, user: models.User, model, ids: list[int]):

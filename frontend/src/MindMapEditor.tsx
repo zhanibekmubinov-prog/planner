@@ -3,16 +3,24 @@
 // v1.2: панель выбранного узла (цвет ветки, толщина, важность, подпись линии), связи-стрелки между любыми узлами
 // (тянуть за ручку под узлом), толщина линий убывает с глубиной автоматически.
 // v1.4: кнопка «Экспорт…» — текст-структура (Markdown: скопировать / скачать) и картинка PNG; геометрия вынесена в mindmapGeom.ts.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { del, dirColor, errorText, MIND_COLOR, MindLink, MindMap, MindMapIn, MindNode, newNodeId, put } from "./api";
+// v1.8: совместная работа — правки уходят операциями над узлами (mindmapLive.ts), чужие приходят живым каналом;
+// узел, выбранный коллегой, обведён его цветом с подписью «Имя · печатает…»; доступ «смотреть» — только просмотр.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { canEdit as canEditAccess, del, dirColor, errorText, MIND_COLOR, MindLink, MindMap, MindNode, MindOp, MindPeer, newNodeId, put } from "./api";
 import { useConfirm } from "./confirm";
 import { layerCount, useDirtyFlag } from "./layers";
 import MiniMenu, { MiniAnchor, miniAnchor } from "./MiniMenu";
 import { copyText, drawMap, fileName, saveFile, toMarkdown, toPngBlob } from "./mindmapExport";
-import { anchor, countAll, edgeEnds, edgePath, findNode, findParent, fontFor, idsOf, Laid, layout, LINK_COLOR, linkGeom, mapTree, PALETTE, PRIORITY_MARK, strokeFor } from "./mindmapGeom";
+import { anchor, countAll, edgeEnds, edgePath, findNode, findParent, fontFor, Laid, layout, LINK_COLOR, linkGeom, mapTree, PALETTE, PRIORITY_MARK, strokeFor } from "./mindmapGeom";
+import { useMindmapSync } from "./mindmapLive";
 import { useIsMobile } from "./mobile";
+import ShareModal from "./ShareModal";
 import { Store } from "./store";
 import { useToast } from "./toast";
+
+/** undefined в патче узла = «как по умолчанию» → для сервера это null. */
+const asFields = (patch: Record<string, unknown>) => Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === undefined ? null : v]));
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("") || "?";
 
 type Props = { store: Store; map: MindMap; onBack: () => void; onDeleted: () => void; onOpenTask?: (taskId: number) => void };
 
@@ -27,30 +35,53 @@ function fitView(el: HTMLElement, laid: Laid[], maxK: number) {
 
 /* ---------- компонент ---------- */
 export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTask }: Props) {
-  const [tree, setTree] = useState<MindNode>(map.data?.id ? map.data : { id: "root", text: map.title, children: [] });
-  const [title, setTitle] = useState(map.title);
+  const writable = canEditAccess(map.access);
+  const isOwner = !map.access || map.access === "owner";
+  const toast = useToast();
+  const storeRef = useRef(store); storeRef.current = store;
+  const mapRef = useRef(map); mapRef.current = map;
+  const sync = useMindmapSync({
+    map, canEdit: writable,
+    onRemote: (patch) => storeRef.current.patchMindmap({ ...mapRef.current, ...patch }),
+    onDeleted: () => { toast("Карту удалил её владелец", { ms: 5000 }); void storeRef.current.reloadMindmaps(); onDeleted(); },
+    onError: (msg) => storeRef.current.setError(msg),
+  });
+  // у того, кто только смотрит, «свернуть / развернуть» — только у себя на экране, в карту не уходит
+  const [localFold, setLocalFold] = useState<Record<string, boolean>>({});
+  const tree = useMemo(() => (writable || !Object.keys(localFold).length ? sync.tree
+    : mapTree(sync.tree, (n) => (n.id in localFold ? { ...n, collapsed: localFold[n.id] } : n))), [sync.tree, localFold, writable]);
+  const [title, setTitle] = useState(sync.title);
+  const titleFocused = useRef(false);
+  useEffect(() => { if (!titleFocused.current) setTitle(sync.title); }, [sync.title]);
+  const [share, setShare] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [selLink, setSelLink] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [noteEdit, setNoteEdit] = useState(false);             // открыта строка «подпись линии» в панели узла
   const [linking, setLinking] = useState<{ from: string; px: number; py: number } | null>(null);
   const [armed, setArmed] = useState<string | null>(null);     // «Связать» кнопкой: ждём клик по второму узлу
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [dragging, setDragging] = useState<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const areaRef = useRef<HTMLDivElement>(null);
-  const timer = useRef<number | null>(null);
   const confirm = useConfirm();
-  const toast = useToast();
   const isMobile = useIsMobile();
   const [exportMenu, setExportMenu] = useState<MiniAnchor | null>(null);
-  // С5: последняя версия — в ref, чтобы досохранить при уходе со страницы; revision — чтобы ответ на старую версию не гасил «изменено»
-  const latest = useRef({ tree, title });
-  const dirtyRef = useRef(false);
-  const revision = useRef(0);
-  const storeRef = useRef(store); storeRef.current = store;
-  useDirtyFlag(dirty);
+  useDirtyFlag(sync.dirty);
+
+  // кто на карте: я — по sid соединения; коллеги по узлам — для рамки их цвета
+  const others = sync.peers.filter((p) => p.sid !== sync.sid && p.user_id !== store.me?.id);
+  const people = [...new Map(sync.peers.map((p) => [p.user_id, p])).values()];
+  const peersOn = useMemo(() => {
+    const m = new Map<string, MindPeer[]>();
+    for (const p of others) if (p.node) m.set(p.node, [...(m.get(p.node) ?? []), p]);
+    return m;
+  }, [others]);
+  useEffect(() => { sync.focus(selected, !!editing); }, [selected, editing]); // eslint-disable-line react-hooks/exhaustive-deps
+  // узел удалил коллега — снимаем выбор и ввод, чтобы панель не висела над пустотой
+  useEffect(() => {
+    if (selected && !findNode(tree, selected)) setSelected(null);
+    if (editing && !findNode(tree, editing)) setEditing(null);
+  }, [tree]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const laid = useMemo(() => layout(tree), [tree]);
   const byId = useMemo(() => new Map(laid.map((l) => [l.node.id, l])), [laid]);
@@ -68,79 +99,49 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     setView(fitView(el, laid, 1));
   }, [map.id, laid]);
 
-  const flush = useCallback(async () => {
-    if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
-    if (!dirtyRef.current) return;
-    const { tree: tr, title: ti } = latest.current; const rev = revision.current;
-    setSaving(true);
-    try {
-      const body: MindMapIn = { title: ti.trim() || tr.text || "Майндмап", direction_id: map.direction_id ?? null, task_id: map.task_id ?? null, data: tr };
-      storeRef.current.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}`, body));
-      if (revision.current === rev) { dirtyRef.current = false; setDirty(false); }
-      else { timer.current = window.setTimeout(() => void flush(), 200); }   // правили во время запроса — дошлём
-    } catch (e) { storeRef.current.setError(errorText(e)); } finally { setSaving(false); }
-  }, [map.id, map.direction_id, map.task_id]);
-
-  const schedule = useCallback(() => {
-    dirtyRef.current = true; revision.current++; setDirty(true);
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => void flush(), 800);
-  }, [flush]);
-
-  const commit = useCallback((next: MindNode, nextTitle?: string) => {
-    setTree(next); latest.current = { ...latest.current, tree: next };
-    if (nextTitle !== undefined) { setTitle(nextTitle); latest.current = { ...latest.current, title: nextTitle }; }
-    schedule();
-  }, [schedule]);
-
-  // С5: уход со страницы (Назад, Esc, другой раздел) — досохраняем то, что не успел таймер
-  useEffect(() => () => { if (dirtyRef.current) void flush(); }, [flush]);
-  const back = () => { void flush(); onBack(); };
+  const commit = (ops: MindOp[]) => sync.apply(ops);
+  const back = () => { void sync.flush(); onBack(); };   // С5: уход со страницы — досылаем то, что не успел таймер
 
   const selectNode = (id: string | null) => { setSelected(id); setSelLink(null); setNoteEdit(false); };
   const selectLink = (id: string | null) => { setSelLink(id); setSelected(null); setEditing(null); setNoteEdit(false); };
 
-  /* --- редактирование --- */
+  /* --- редактирование: каждое действие — операция над одним узлом (v1.8) --- */
   function patchNode(id: string, patch: Partial<MindNode>) {
-    commit(mapTree(tree, (n) => (n.id === id ? { ...n, ...patch } : n)));
+    commit([{ type: "set", id, fields: asFields(patch) }]);
   }
   function addChild(parentId: string) {
+    if (!writable) return;
     const id = newNodeId();
-    commit(mapTree(tree, (n) => (n.id === parentId ? { ...n, collapsed: false, children: [...n.children, { id, text: "", children: [] }] } : n)));
+    const parent = findNode(tree, parentId);
+    commit([
+      ...(parent?.collapsed ? [{ type: "set", id: parentId, fields: { collapsed: false } } as MindOp] : []),
+      { type: "add", parent: parentId, node: { id, text: "" } },
+    ]);
     selectNode(id); setEditing(id);
   }
   function addSibling(id: string) {
+    if (!writable) return;
     const parent = findParent(tree, id); if (!parent) { addChild(id); return; }
     const nid = newNodeId();
-    commit(mapTree(tree, (n) => {
-      if (n.id !== parent.id) return n;
-      const i = n.children.findIndex((c) => c.id === id);
-      const kids = [...n.children]; kids.splice(i + 1, 0, { id: nid, text: "", children: [] });
-      return { ...n, children: kids };
-    }));
+    commit([{ type: "add", parent: parent.id, index: parent.children.findIndex((c) => c.id === id) + 1, node: { id: nid, text: "" } }]);
     selectNode(nid); setEditing(nid);
   }
-  /** Убрать узел из дерева и все связи, которые в него (или в его ветку) вели. */
-  function withoutNode(root: MindNode, id: string): MindNode {
-    const gone = idsOf(findNode(root, id) ?? { id, text: "", children: [] });
-    const parent = findParent(root, id);
-    const next = mapTree(root, (x) => (x.id === parent?.id ? { ...x, children: x.children.filter((c) => c.id !== id) } : x));
-    return { ...next, links: (next.links ?? []).filter((l) => !gone.has(l.from) && !gone.has(l.to)) };
-  }
   async function removeNode(id: string) {
-    if (id === tree.id) return;
+    if (!writable || id === tree.id) return;
     const node = findNode(tree, id); if (!node) return;
     const n = countAll(node) - 1;
     if (n > 0 && !(await confirm(`Узел «${node.text || "…"}» и ${n} вложенных исчезнут с карты.`, { title: "Удалить ветку?", danger: true, okLabel: "Удалить ветку" }))) return;
     const parent = findParent(tree, id);
-    commit(withoutNode(tree, id));
+    commit([{ type: "remove", id }]);   // связи в эту ветку сервер (и mindmapOps) убирают сами
     selectNode(parent?.id ?? null); setEditing(null);
   }
   function setText(id: string, text: string) {
-    commit(mapTree(tree, (n) => (n.id === id ? { ...n, text } : n)), id === tree.id ? text : undefined);
+    commit([{ type: "set", id, fields: { text } }, ...(id === tree.id && text.trim() ? [{ type: "title", title: text } as MindOp] : [])]);
   }
   function toggleCollapse(id: string) {
-    commit(mapTree(tree, (n) => (n.id === id ? { ...n, collapsed: !n.collapsed } : n)));
+    const n = findNode(tree, id); if (!n) return;
+    if (writable) commit([{ type: "set", id, fields: { collapsed: !n.collapsed } }]);
+    else setLocalFold((f) => ({ ...f, [id]: !n.collapsed }));
   }
   function finishEdit(id: string) {
     setEditing(null);
@@ -148,7 +149,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
     if (node && !node.text.trim() && id !== tree.id) {
       // пустой новый узел — убираем
       const parent = findParent(tree, id);
-      commit(withoutNode(tree, id));
+      commit([{ type: "remove", id }]);
       selectNode(parent?.id ?? null);
     }
   }
@@ -159,17 +160,18 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
 
   /* --- связи --- */
   function addLink(from: string, to: string) {
-    if (from === to || !findNode(tree, from) || !findNode(tree, to)) return;
+    if (!writable || from === to || !findNode(tree, from) || !findNode(tree, to)) return;
     if (links.some((l) => (l.from === from && l.to === to) || (l.from === to && l.to === from))) return;   // уже связаны
     const id = newNodeId();
-    commit({ ...tree, links: [...links, { id, from, to }] });
+    commit([{ type: "link_add", link: { id, from, to } }]);
     selectLink(id);
   }
   function patchLink(id: string, patch: Partial<MindLink>) {
-    commit({ ...tree, links: links.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
+    commit([{ type: "link_set", id, fields: asFields(patch) }]);
   }
   function removeLink(id: string) {
-    commit({ ...tree, links: links.filter((l) => l.id !== id) });
+    if (!writable) return;
+    commit([{ type: "link_remove", id }]);
     setSelLink(null);
   }
   const toLayer = (clientX: number, clientY: number) => {
@@ -206,6 +208,11 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
         return;
       }
       if (!selected) { if (e.key === "Escape") back(); return; }
+      if (!writable) {   // только просмотр: свернуть у себя и снять выбор
+        if (e.key === " ") { e.preventDefault(); toggleCollapse(selected); }
+        else if (e.key === "Escape") selectNode(null);
+        return;
+      }
       if (e.key === "Tab") { e.preventDefault(); addChild(selected); }
       else if (e.key === "Enter") { e.preventDefault(); if (e.shiftKey || selected === tree.id) setEditing(selected); else addSibling(selected); }
       else if (e.key === "F2") { e.preventDefault(); setEditing(selected); }
@@ -237,10 +244,14 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
   }
 
   async function relink(directionId: number | null) {
+    // v1.8: привязка отдельно от содержимого — не перезаписываем карту, которую в этот момент правят другие
     try {
-      const body: MindMapIn = { title: title.trim() || tree.text || "Майндмап", direction_id: directionId, task_id: map.task_id ?? null, data: tree };
-      store.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}`, body));
+      store.patchMindmap(await put<MindMap>(`/mindmaps/${map.id}/link`, { direction_id: directionId, task_id: map.task_id ?? null }));
     } catch (e) { store.setError(errorText(e)); }
+  }
+  function onTitle(v: string) {
+    setTitle(v);
+    if (v.trim()) commit([{ type: "title", title: v }]);   // пустое название не отправляем — останется прежнее
   }
 
   /* --- экспорт (v1.4) --- */
@@ -267,7 +278,6 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
 
   async function removeMap() {
     if (!(await confirm(`Майндмап «${title}» будет удалён целиком — все ${countAll(tree)} узлов. Корзины у майндмапов нет.`, { title: "Удалить майндмап?", danger: true, okLabel: "Удалить майндмап" }))) return;
-    dirtyRef.current = false; if (timer.current) window.clearTimeout(timer.current);
     try { await del(`/mindmaps/${map.id}`); await store.reloadMindmaps(); onDeleted(); } catch (e) { store.setError(errorText(e)); }
   }
 
@@ -290,17 +300,32 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
       <div className="mm-bar">
         <button className="btn ghost" onClick={back}>← Назад</button>
         <span className="mm-glyph" aria-hidden="true" />
-        <input className="mm-title" value={title} onChange={(e) => { setTitle(e.target.value); latest.current = { ...latest.current, title: e.target.value }; schedule(); }} placeholder="Название майндмапа" />
-        <label className="mm-dir" title="Направление майндмапа">
+        <input className="mm-title" value={title} readOnly={!writable} placeholder="Название майндмапа"
+               onFocus={() => { titleFocused.current = true; }} onBlur={() => { titleFocused.current = false; setTitle(sync.title); }}
+               onChange={(e) => onTitle(e.target.value)} />
+        <label className="mm-dir" title={isOwner ? "Направление майндмапа" : "Привязку карты меняет только её владелец"}>
           <span className="dot" style={{ background: direction ? dirColor(direction) : "var(--line-strong)" }} />
-          <select className="select" value={map.direction_id ?? ""} onChange={(e) => void relink(e.target.value === "" ? null : Number(e.target.value))}>
+          <select className="select" value={map.direction_id ?? ""} disabled={!isOwner} onChange={(e) => void relink(e.target.value === "" ? null : Number(e.target.value))}>
+            {!isOwner && map.direction_id && !direction && <option value={map.direction_id}>Направление владельца</option>}
             <option value="">Без направления</option>
             {store.directions.filter((d) => d.status !== "archived" || d.id === map.direction_id).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </label>
         {task && <button className="tag mm-tasklink" onClick={() => onOpenTask?.(task.id)} title="Открыть задачу">задача: {task.title}</button>}
-        <span className="saving">{saving ? "сохраняю…" : dirty ? "изменено" : "сохранено"}</span>
+        {!writable && <span className="tag mm-readonly" title="Карту открыли вам на просмотр — менять её могут владелец и редакторы">только просмотр</span>}
+        {!isOwner && map.owner && <span className="mm-owner">карта: {map.owner.name}</span>}
+        {writable && <span className="saving">{sync.offline ? "нет связи — повторю" : sync.saving ? "сохраняю…" : sync.dirty ? "изменено" : "сохранено"}</span>}
         <span className="spacer" />
+        {people.length > 1 && (
+          <div className="mm-people" aria-label="Сейчас на карте">
+            {people.map((p) => (
+              <span key={p.user_id} className="mm-avatar" style={{ ["--peer" as string]: p.color }}
+                    title={p.user_id === store.me?.id ? `${p.name} (вы)` : p.node ? `${p.name} — ${p.editing ? "печатает" : "смотрит на узел"}` : p.name}>
+                {initials(p.name)}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mm-zoom">
           <button className="btn ghost sm" onClick={() => setView((v) => ({ ...v, k: Math.max(0.3, v.k / 1.2) }))} aria-label="Уменьшить">−</button>
           <span className="mono">{Math.round(view.k * 100)}%</span>
@@ -308,8 +333,10 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
           <button className="btn ghost sm" onClick={fit}>Вписать</button>
         </div>
         <button className="btn ghost sm mm-export" onClick={(e) => setExportMenu(miniAnchor(e))} aria-haspopup="menu" aria-expanded={!!exportMenu} title="Экспорт: текст-структура для Claude или картинка">Экспорт…</button>
-        <button className="btn danger sm" onClick={removeMap}>Удалить</button>
+        {isOwner && <button className="btn ghost sm" onClick={() => setShare(true)} title="Открыть карту коллегам на просмотр или редактирование">⇄ Поделиться</button>}
+        {isOwner && <button className="btn danger sm" onClick={removeMap}>Удалить</button>}
       </div>
+      {share && <ShareModal store={store} target={{ type: "mindmap", id: map.id, name: title || sync.title, color: MIND_COLOR }} onClose={() => setShare(false)} />}
       {exportMenu && (
         <MiniMenu anchor={exportMenu} label="Экспорт майндмапа" title="Экспорт майндмапа" onClose={() => setExportMenu(null)} items={[
           { label: "Скопировать структуру (текст)", onClick: () => void exportMarkdown("copy") },
@@ -354,7 +381,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
             return (
               <button key={"n" + l.node.id} className="mm-edge-note" style={{ left: (x1 + x2) / 2, top: (y1 + y2) / 2, ["--c" as string]: l.color }}
                       title="Подпись линии — нажмите, чтобы изменить"
-                      onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); selectNode(l.node.id); setNoteEdit(true); }}>
+                      onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); selectNode(l.node.id); setNoteEdit(writable); }}>
                 {l.node.note}
               </button>
             );
@@ -363,15 +390,17 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
             const isSel = selected === l.node.id, isEdit = editing === l.node.id;
             const hidden = l.node.collapsed && l.node.children.length > 0;
             const prio = l.node.priority ?? 0;
+            const here = peersOn.get(l.node.id);   // коллеги, выбравшие этот узел (выбор владельца 2026-11-14: рамка + имя)
+            const peer = here?.[0];
             return (
               <div
                 key={l.node.id} data-node={l.node.id}
-                className={`mm-node d${Math.min(l.depth, 2)} ${isSel ? "sel" : ""} ${hidden ? "collapsed" : ""} ${isEdit ? "editing" : ""} ${armed && armed !== l.node.id ? "target" : ""}`}
+                className={`mm-node d${Math.min(l.depth, 2)} ${isSel ? "sel" : ""} ${hidden ? "collapsed" : ""} ${isEdit ? "editing" : ""} ${armed && armed !== l.node.id ? "target" : ""} ${peer ? "peer" : ""}`}
                 style={(() => {
                   // В режиме ввода узел шире — растёт в сторону от родителя, чтобы не наезжать на него
                   const w = isEdit ? Math.max(l.w, 240) : l.w;
                   const left = !isEdit || l.side === 0 ? l.x - w / 2 : l.side === 1 ? l.x - l.w / 2 : l.x + l.w / 2 - w;
-                  return { left, top: l.y - l.h / 2, width: w, minHeight: l.h, ["--c" as string]: l.color, fontSize: fontFor(l.depth) };
+                  return { left, top: l.y - l.h / 2, width: w, minHeight: l.h, ["--c" as string]: l.color, ["--peer" as string]: peer?.color, fontSize: fontFor(l.depth) };
                 })()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -379,8 +408,13 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
                   if (armed && armed !== l.node.id) { addLink(armed, l.node.id); setArmed(null); return; }
                   selectNode(l.node.id);
                 }}
-                onDoubleClick={(e) => { e.stopPropagation(); selectNode(l.node.id); setEditing(l.node.id); }}
+                onDoubleClick={(e) => { e.stopPropagation(); selectNode(l.node.id); if (writable) setEditing(l.node.id); }}
               >
+                {peer && (
+                  <span className="mm-peer-tag" aria-label={`${peer.name} ${peer.editing ? "печатает" : "выбрал(а) этот узел"}`}>
+                    {peer.name.split(/\s+/)[0]}{peer.editing ? " · печатает…" : ""}{here!.length > 1 ? ` +${here!.length - 1}` : ""}
+                  </span>
+                )}
                 {isEdit ? (
                   <textarea
                     autoFocus className="mm-input" value={l.node.text} rows={1}
@@ -398,7 +432,10 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
                 )}
                 {prio > 0 && <span className={`mm-badge p${prio}`} title={`Важность ${prio} из 3`} aria-label={`Важность ${prio} из 3`}>{PRIORITY_MARK[prio]}</span>}
                 {hidden && <button className="mm-count" title="Развернуть" onClick={(e) => { e.stopPropagation(); toggleCollapse(l.node.id); }}>{countAll(l.node) - 1}</button>}
-                {isSel && !isEdit && (
+                {isSel && !isEdit && !writable && l.node.children.length > 0 && !hidden && (
+                  <button className={`mm-fold ${l.side === -1 ? "left" : "right"}`} title="Свернуть у себя (пробел)" onClick={(e) => { e.stopPropagation(); toggleCollapse(l.node.id); }}>–</button>
+                )}
+                {isSel && !isEdit && writable && (
                   <>
                     <button className={`mm-add ${l.side === -1 ? "left" : "right"}`} title="Добавить подпункт (Tab)" onClick={(e) => { e.stopPropagation(); addChild(l.node.id); }}>+</button>
                     {l.node.children.length > 0 && !hidden && (
@@ -425,7 +462,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
         </div>
 
         {/* панель выбранного узла — над узлом, в экранных координатах (не масштабируется вместе с картой) */}
-        {selL && !editing && (() => {
+        {selL && !editing && writable && (() => {
           const pos = toScreen(selL.x, selL.y - selL.h / 2);
           const isRoot = selL.depth === 0; const n = selL.node; const cur = n.priority ?? 0;
           return (
@@ -467,7 +504,7 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
         })()}
 
         {/* панель выбранной связи */}
-        {selLk && (() => {
+        {selLk && writable && (() => {
           const g = linkGeom(selLk.a, selLk.b); const pos = toScreen(g.mid.x, g.mid.y); const l = selLk.l;
           return (
             <div className="mm-panel" style={{ left: pos.left, top: pos.top - 14 }} role="toolbar" aria-label="Настройки связи"
@@ -485,11 +522,18 @@ export default function MindMapEditor({ store, map, onBack, onDeleted, onOpenTas
           );
         })()}
 
-        <div className="mm-help">
-          <span><kbd>Tab</kbd> подпункт</span><span><kbd>Enter</kbd> соседний</span><span><kbd>F2</kbd> / двойной клик — текст</span>
-          <span><kbd>Del</kbd> удалить</span><span><kbd>Пробел</kbd> свернуть</span><span><kbd>1</kbd>–<kbd>3</kbd> важность</span>
-          <span>точка под узлом — потянуть на другой узел: связь</span><span>колёсико — масштаб, тянуть фон — сдвиг</span>
-        </div>
+        {writable ? (
+          <div className="mm-help">
+            <span><kbd>Tab</kbd> подпункт</span><span><kbd>Enter</kbd> соседний</span><span><kbd>F2</kbd> / двойной клик — текст</span>
+            <span><kbd>Del</kbd> удалить</span><span><kbd>Пробел</kbd> свернуть</span><span><kbd>1</kbd>–<kbd>3</kbd> важность</span>
+            <span>точка под узлом — потянуть на другой узел: связь</span><span>колёсико — масштаб, тянуть фон — сдвиг</span>
+          </div>
+        ) : (
+          <div className="mm-help">
+            <span>Только просмотр: правки владельца и редакторов появляются сами</span>
+            <span><kbd>Пробел</kbd> свернуть у себя</span><span>колёсико — масштаб, тянуть фон — сдвиг</span>
+          </div>
+        )}
       </div>
     </div>
   );
